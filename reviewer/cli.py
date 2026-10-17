@@ -8,7 +8,7 @@ import time
 from reviewer.config import load_config, resolve_models, validate_ready
 from reviewer.github import AcquisitionError, GitHubClient
 from reviewer.models import ModelError, OpenAIReviewer
-from reviewer.pipeline import run_baseline, run_review, prepare_context
+from reviewer.pipeline import run_baseline, run_review, prepare_context, prepare_static_analysis
 from reviewer.schemas import MODES
 from reviewer.storage import save_run
 
@@ -85,8 +85,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         if any(mode not in MODES for mode in args.modes):
             parser.error('invalid choice for --modes')
         return _benchmark_main(args, parser)
-    if args.mode not in ('baseline', 'retrieval'):
-        parser.error("only baseline and retrieval review are implemented")
+    if args.mode not in ('baseline', 'retrieval', 'tools'):
+        parser.error("only baseline, retrieval, and tools review are implemented")
     try:
         config = load_config(args.config)
         if args.input_token_limit is not None:
@@ -116,17 +116,30 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
     try:
         started = time.perf_counter()
-        acquired = GitHubClient().acquire(args.repo, args.pr, snapshots=args.mode == 'retrieval', cache_dir=config.cache_dir + "/github")
+        acquired = GitHubClient().acquire(args.repo, args.pr, snapshots=args.mode in ('retrieval', 'tools'), cache_dir=config.cache_dir + "/github")
         acquisition_latency = time.perf_counter() - started
         if args.mode == 'baseline':
             run = run_baseline(acquired.review_input, provider, acquisition_latency_seconds=acquisition_latency,
                                input_artifact_directory=str(acquired.artifact_directory))
-        else:
+        elif args.mode == 'retrieval':
             retrieval_started = time.perf_counter()
             context = prepare_context(acquired.review_input, provider, acquired.head_snapshot, config.retrieval,
                                       cache_dir=config.cache_dir + '/retrieval')
             run = run_review(acquired.review_input, provider, mode='retrieval', context=context,
                              retrieval_latency_seconds=time.perf_counter() - retrieval_started,
+                             acquisition_latency_seconds=acquisition_latency,
+                             input_artifact_directory=str(acquired.artifact_directory))
+        else:  # tools mode
+            retrieval_started = time.perf_counter()
+            context = prepare_context(acquired.review_input, provider, acquired.head_snapshot, config.retrieval,
+                                      cache_dir=config.cache_dir + '/retrieval')
+            retrieval_latency = time.perf_counter() - retrieval_started
+            static_started = time.perf_counter()
+            static_analysis = prepare_static_analysis(acquired.review_input, acquired.head_snapshot, context, config.static_analysis)
+            static_latency = time.perf_counter() - static_started
+            run = run_review(acquired.review_input, provider, mode='tools', context=context,
+                             static_analysis=static_analysis, static_analysis_latency_seconds=static_latency,
+                             retrieval_latency_seconds=retrieval_latency,
                              acquisition_latency_seconds=acquisition_latency,
                              input_artifact_directory=str(acquired.artifact_directory))
         path = save_run(run, config.results_dir)
@@ -145,8 +158,8 @@ def _benchmark_main(args, parser):
     from reviewer.benchmark import load_benchmark, read_json, REVISION, MANIFEST_SHA256
     from reviewer.evaluation import Pricing, run_development_subset
     if (not args.modes or len(set(args.modes)) != len(args.modes)
-            or any(mode not in ('baseline', 'retrieval') for mode in args.modes)):
-        parser.error('only unique baseline/retrieval modes are implemented; scoring is paused')
+            or any(mode not in ('baseline', 'retrieval', 'tools') for mode in args.modes)):
+        parser.error('only unique baseline/retrieval/tools modes are implemented; scoring is paused')
     failure_code = 'invalid_config_file'
     try:
         config = load_config(args.config)

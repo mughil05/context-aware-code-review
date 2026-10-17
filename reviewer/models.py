@@ -102,11 +102,14 @@ class OpenAIReviewer:
         self._api_key = key
         self._transport, self._clock, self._sleep = transport, clock, sleep
 
-    def payload(self, diff: str, prompt: str, *, context: list[dict] | None = None) -> dict:
+    def payload(self, diff: str, prompt: str, *, context: list[dict] | None = None,
+                static_signals: list[dict] | None = None) -> dict:
         # Explicit allowlist: never serialize ReviewInput/AcquiredPR or config wholesale.
         evidence = {"diff": diff}
         if context is not None:
             evidence['repository_context'] = context
+        if static_signals is not None:
+            evidence['static_analysis_signals'] = static_signals
         payload = {"model": self.model, "instructions": prompt,
                    "input": [{"role": "user", "content": json.dumps(evidence, ensure_ascii=False)}],
                    "text": {"format": {"type": "json_schema", "name": "review_findings",

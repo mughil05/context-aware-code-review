@@ -63,16 +63,35 @@ def prepare_context(review_input, reviewer, snapshot, config, *, cache_dir=None)
     return context
 
 
+def prepare_static_analysis(review_input, snapshot, context, static_config):
+    """Run static analysis on frozen snapshot; never analyze live working tree."""
+    from reviewer.static_analysis import analyze_snapshot
+    return analyze_snapshot(
+        review_input,
+        snapshot,
+        context,
+        timeout_seconds=static_config.timeout_seconds,
+        budget=static_config.signal_token_budget
+    )
+
+
 def run_review(review_input: ReviewInput, reviewer: OpenAIReviewer, *, mode='baseline',
                context: RepositoryContext | None = None, retrieval_latency_seconds=0.0,
+               static_analysis=None, static_analysis_latency_seconds=0.0,
                acquisition_latency_seconds=0.0, input_artifact_directory=None,
                clock=time.perf_counter) -> BaselineRun:
-    """Shared A/B reviewer, schema and anchors; only supplied evidence differs."""
-    if mode not in ('baseline', 'retrieval') or (mode == 'baseline' and context is not None):
+    """Shared A/B/C reviewer, schema and anchors; only supplied evidence differs."""
+    if mode not in ('baseline', 'retrieval', 'tools') or (mode == 'baseline' and context is not None):
         raise ValueError('unsupported mode or context supplied to baseline')
     if mode == 'retrieval':
         if context is None:
             raise ValueError('retrieval requires explicit frozen context')
+        context = RepositoryContext.model_validate(context.model_dump())
+        if context.head != review_input.pr.head or context.diff_sha256 != sha256(review_input.diff.encode()):
+            raise ValueError('retrieval context belongs to another frozen input')
+    if mode == 'tools':
+        if context is None or static_analysis is None:
+            raise ValueError('tools mode requires both retrieval context and static analysis')
         context = RepositoryContext.model_validate(context.model_dump())
         if context.head != review_input.pr.head or context.diff_sha256 != sha256(review_input.diff.encode()):
             raise ValueError('retrieval context belongs to another frozen input')
@@ -89,7 +108,13 @@ def run_review(review_input: ReviewInput, reviewer: OpenAIReviewer, *, mode='bas
     error = None
     try:
         parsed = parse_diff(review_input.diff)
-        payload = reviewer.payload(review_input.diff, prompt, context=context.payload()) if context else reviewer.payload(review_input.diff, prompt)
+        static_signals = static_analysis.payload(reviewer.config.input_token_limit) if static_analysis and mode == 'tools' else None
+        if mode == 'tools':
+            payload = reviewer.payload(review_input.diff, prompt, context=context.payload(), static_signals=static_signals)
+        elif context:
+            payload = reviewer.payload(review_input.diff, prompt, context=context.payload())
+        else:
+            payload = reviewer.payload(review_input.diff, prompt)
         request_hash = sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False, allow_nan=False).encode("utf-8"))
         reply = reviewer.complete(payload)
         attempts = list(reply.attempts)
@@ -117,6 +142,8 @@ def run_review(review_input: ReviewInput, reviewer: OpenAIReviewer, *, mode='bas
                        request_sha256=request_hash, created_at=datetime.now(timezone.utc).isoformat(),
                        attempts=attempts, model_latency_seconds=model_latency,
                        acquisition_latency_seconds=acquisition_latency_seconds,
-                       total_latency_seconds=acquisition_latency_seconds + retrieval_latency_seconds + max(0.0, clock() - started),
+                       total_latency_seconds=acquisition_latency_seconds + retrieval_latency_seconds + static_analysis_latency_seconds + max(0.0, clock() - started),
                        output_text=output_text, input_artifact_directory=input_artifact_directory,
-                       retrieval=context, retrieval_latency_seconds=retrieval_latency_seconds)
+                       retrieval=context, retrieval_latency_seconds=retrieval_latency_seconds,
+                       static_analysis=static_analysis.model_dump() if static_analysis else None,
+                       static_analysis_latency_seconds=static_analysis_latency_seconds)

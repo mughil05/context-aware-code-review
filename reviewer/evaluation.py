@@ -12,7 +12,7 @@ import uuid
 from pydantic import Field
 
 from reviewer.benchmark import digest, export_predictions, qualifying_count, reconstruct
-from reviewer.pipeline import review_prompt, review_settings, run_baseline, run_review, prepare_context
+from reviewer.pipeline import review_prompt, review_settings, run_baseline, run_review, prepare_context, prepare_static_analysis
 from reviewer.schemas import StrictModel, Text
 from reviewer.storage import save_run
 
@@ -83,10 +83,10 @@ def run_development_subset(benchmark, reviewer, client, results_dir, *, pricing=
     the future experiment config do not apply to this development smoke run.
     """
     modes = ['baseline'] if modes is None else modes
-    if not modes or len(set(modes)) != len(modes) or any(m not in ('baseline', 'retrieval') for m in modes):
-        raise ValueError('only unique baseline/retrieval modes are implemented')
-    if 'retrieval' in modes and (retrieval_config is None or resume_from is not None):
-        raise ValueError('retrieval requires configuration; retrieval resume is not implemented')
+    if not modes or len(set(modes)) != len(modes) or any(m not in ('baseline', 'retrieval', 'tools') for m in modes):
+        raise ValueError('only unique baseline/retrieval/tools modes are implemented')
+    if ('retrieval' in modes or 'tools' in modes) and (retrieval_config is None or resume_from is not None):
+        raise ValueError('retrieval/tools require configuration; retrieval/tools resume is not implemented')
     if reviewer.config.max_attempts != 1:
         raise ValueError('development subset requires max_attempts=1')
     if pricing is not None and pricing.model != reviewer.model:
@@ -147,18 +147,33 @@ def run_development_subset(benchmark, reviewer, client, results_dir, *, pricing=
             write_json(reference, benchmark.golden[task.task_id])
             record['reference_export_sha256'] = digest(reference.read_bytes())
             context, retrieval_elapsed = None, 0.0
-            if 'retrieval' in modes:
+            static_result, static_elapsed = None, 0.0
+            if 'retrieval' in modes or 'tools' in modes:
                 retrieval_started = time.perf_counter()
                 snapshot = client.frozen_head(task.pr, source_repository=task.source_repository,
                                               cache_dir=Path(cache_dir) / 'github')
                 context = prepare_context(inp, reviewer, snapshot, retrieval_config,
                                           cache_dir=Path(cache_dir) / 'retrieval')
                 retrieval_elapsed = time.perf_counter() - retrieval_started
-            report['tasks'].pop()  # Expand this shared frozen input into the requested A/B records.
+            if 'tools' in modes:
+                from reviewer.config import load_config
+                config = load_config('configs/experiment.toml')
+                static_started = time.perf_counter()
+                try:
+                    static_result = prepare_static_analysis(inp, snapshot, context, config.static_analysis)
+                    static_elapsed = time.perf_counter() - static_started
+                except Exception:
+                    # Static analysis failures are treated as preflight failures
+                    raise ValueError('static analysis preflight failed')
+            report['tasks'].pop()  # Expand this shared frozen input into the requested A/B/C records.
             for mode in modes:
                 mode_record = dict(record, mode=mode)
                 if mode == 'retrieval':
                     payload = reviewer.payload(inp.diff, review_prompt(), context=context.payload())
+                    mode_record['conservative_input_estimate'] = len(json.dumps(payload, ensure_ascii=False).encode()) + 4096
+                elif mode == 'tools':
+                    payload = reviewer.payload(inp.diff, review_prompt(), context=context.payload(),
+                                              static_signals=static_result.payload(config.static_analysis.signal_token_budget))
                     mode_record['conservative_input_estimate'] = len(json.dumps(payload, ensure_ascii=False).encode()) + 4096
                 report['tasks'].append(mode_record)
                 mode_root = root if modes == ['baseline'] else root / 'modes' / mode
@@ -166,26 +181,33 @@ def run_development_subset(benchmark, reviewer, client, results_dir, *, pricing=
                     for directory in ('runs', 'candidates'):
                         (mode_root / directory).mkdir(parents=True, exist_ok=True)
                 prepared.append((task, inp, elapsed, mode_record, mode_root,
-                                 context if mode == 'retrieval' else None,
-                                 retrieval_elapsed if mode == 'retrieval' else 0.0))
+                                 context if mode in ('retrieval', 'tools') else None,
+                                 retrieval_elapsed if mode in ('retrieval', 'tools') else 0.0,
+                                 static_result if mode == 'tools' else None,
+                                 static_elapsed if mode == 'tools' else 0.0))
         # Copy every success before attempting new work, including successes that
         # appear after a failed task. A later failure cannot lose reusable work.
         if plan:
-            for task, inp, elapsed, record, mode_root, context, retrieval_elapsed in prepared:
+            for task, inp, elapsed, record, mode_root, context, retrieval_elapsed, static_result, static_elapsed in prepared:
                 if record['reused']:
                     prior = plan.tasks[task.task_id]
                     _persist_result(root, task, prior.run, record, pricing, reused_raw=prior.raw)
                     record['reused_from'] = str(plan.source / 'runs' / task.task_id / 'baseline.json')
                     report['completed_reviews'] += 1
                     report['reused_reviews'] += 1
-        for task, inp, elapsed, record, mode_root, context, retrieval_elapsed in prepared:
+        for task, inp, elapsed, record, mode_root, context, retrieval_elapsed, static_result, static_elapsed in prepared:
             if record['reused']:
                 continue
             if record['mode'] == 'baseline':
                 run = run_baseline(inp, reviewer, acquisition_latency_seconds=elapsed,
                                    input_artifact_directory=str((root / 'inputs').resolve()))
-            else:
+            elif record['mode'] == 'retrieval':
                 run = run_review(inp, reviewer, mode='retrieval', context=context,
+                                 retrieval_latency_seconds=retrieval_elapsed, acquisition_latency_seconds=elapsed,
+                                 input_artifact_directory=str((root / 'inputs').resolve()))
+            else:  # tools mode
+                run = run_review(inp, reviewer, mode='tools', context=context,
+                                 static_analysis=static_result, static_analysis_latency_seconds=static_elapsed,
                                  retrieval_latency_seconds=retrieval_elapsed, acquisition_latency_seconds=elapsed,
                                  input_artifact_directory=str((root / 'inputs').resolve()))
             _persist_result(mode_root, task, run, record, pricing)

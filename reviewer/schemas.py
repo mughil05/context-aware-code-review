@@ -217,3 +217,5 @@ class BaselineRun(StrictModel):
     cost_usd: None = None  # Price/version selection is deliberately deferred.
     retrieval: RepositoryContext | None = None
     retrieval_latency_seconds: Annotated[float, Field(ge=0, allow_inf_nan=False)] = 0.0
+    static_analysis: dict[str, object] | None = None  # StaticAnalysisResult for tools/full modes
+    static_analysis_latency_seconds: Annotated[float, Field(ge=0, allow_inf_nan=False)] = 0.0
