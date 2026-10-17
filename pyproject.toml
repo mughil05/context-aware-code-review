@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68,<83"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "context-aware-code-review"
+version = "0.0.1"
+description = "An experimental repository-aware reviewer for Python pull requests"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["pydantic>=2,<3"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["reviewer*"]
+
+[tool.setuptools.package-data]
+reviewer = ["prompts/*.txt"]

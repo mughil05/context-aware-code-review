@@ -1,0 +1,9 @@
+{
+  "repository": "https://github.com/review-bench/ReviewBench",
+  "revision": "968291d99e82b3e2969d7e0b4acca62585886c13",
+  "sha256": {
+    "scripts/eval/input-validation.ts": "30bc63f53695d83c468aba4d22c3e49da5dc1b68dc98f0e88f394aea313fb153",
+    "scripts/lib/types.ts": "f835f80db8c4441217efc2e0b2d0214632bac1866af98679c64eeb67860b30d0",
+    "LICENSE": "18a24e58967e165bcdd21030b16b85673e025439d55686d3af642c8f815d5840"
+  }
+}

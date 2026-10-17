@@ -1,0 +1,88 @@
+{
+  "schema_version": 1,
+  "benchmark_revision": "968291d99e82b3e2969d7e0b4acca62585886c13",
+  "manifest_sha256": "e74656b8c1c4bbab5ce85f1fcb742a7aaad550a4d7bd46e1f83a0746807bfa02",
+  "purpose": "development-only",
+  "tasks": [
+    {
+      "task_id": "AA-Factory_aafactory-prototype_17-a1978cb7",
+      "pr": {
+        "repo": "https://github.com/AA-Factory/aafactory-prototype",
+        "pr_number": 17,
+        "base": "e7f558c7360abac335af2df22f4ed376992b30ab",
+        "head": "a1978cb75950a879df8805e4a5f373eb6678f6f9"
+      },
+      "language": "Python",
+      "files_changed": 1,
+      "lines_added": 45,
+      "lines_removed": 0,
+      "golden_sha256": "ae659d056f8ef9f43f81133bce6cc679f719e98979551e97d46d870c17efa60c",
+      "diff_sha256": "536044f32a3720b70e20720ca88ff0b6320e04baf3dd1f0d6f16420c0a3c50ab",
+      "source_repository": "review-bench/AA-Factory_aafactory-prototype"
+    },
+    {
+      "task_id": "Tzeusy_butlers_1021-403e15fe",
+      "pr": {
+        "repo": "https://github.com/Tzeusy/butlers",
+        "pr_number": 1021,
+        "base": "b57517a5f8daf3b4e776884589ffedb35018b5d4",
+        "head": "403e15fe7702ac03ac466dedd11e49f9d6ce7d66"
+      },
+      "language": "Python",
+      "files_changed": 7,
+      "lines_added": 278,
+      "lines_removed": 13,
+      "golden_sha256": "2d74995fcc41b0acd49761e8f831427c486c08c7501386f70ee01391da03a52d",
+      "diff_sha256": "0ddcb90a9f783ddb80447c595c379b594d7b5d4aee2497340aaa7828c872ebea",
+      "source_repository": "review-bench/Tzeusy_butlers"
+    },
+    {
+      "task_id": "allan-mobley-jr_gimmes_468-e1477f8b",
+      "pr": {
+        "repo": "https://github.com/allan-mobley-jr/gimmes",
+        "pr_number": 468,
+        "base": "08efd0bbc34fd29de2a4077f07d24f3dc02a63b6",
+        "head": "e1477f8b3f18c1de6ff87dbca9465a7b106dc193"
+      },
+      "language": "Python",
+      "files_changed": 4,
+      "lines_added": 129,
+      "lines_removed": 30,
+      "golden_sha256": "1552af5ae4cb65d2f1edab601dd7a58182b778bad60017b74e56adc27ed39a9d",
+      "diff_sha256": "000b9866f9f7bda45da3637bf0ed86c4a6ba647ff5d0d492919014254b992087",
+      "source_repository": "review-bench/allan-mobley-jr_gimmes"
+    },
+    {
+      "task_id": "YasserShkeir_django-smart-ratelimit_25-d7c5c7c2",
+      "pr": {
+        "repo": "https://github.com/YasserShkeir/django-smart-ratelimit",
+        "pr_number": 25,
+        "base": "442d4ac196a0dcac3aef6bc41a09ebf5a9a354d9",
+        "head": "d7c5c7c2ba6399e3cfcfa7f74eeb8c35c4429a79"
+      },
+      "language": "Python",
+      "files_changed": 10,
+      "lines_added": 195,
+      "lines_removed": 24,
+      "golden_sha256": "78403672975cbe07bcb87700766a3b3ea07d1c161658be60068221d86120c531",
+      "diff_sha256": "eb677ff705df5addc90abafece7a9c24cb21e33b88221b95a1a1795a2467f2cc",
+      "source_repository": "review-bench/YasserShkeir_django-smart-ratelimit"
+    },
+    {
+      "task_id": "ZhuoZhuoCrayon_throttled-py_135-94c7df60",
+      "pr": {
+        "repo": "https://github.com/ZhuoZhuoCrayon/throttled-py",
+        "pr_number": 135,
+        "base": "ab16e7e5e3ff5e20a1850be20494093335b76f45",
+        "head": "94c7df6076f93b2466807357ac3a4959a4b26aef"
+      },
+      "language": "Python",
+      "files_changed": 7,
+      "lines_added": 235,
+      "lines_removed": 17,
+      "golden_sha256": "5475006436f33041d23aa6800d729daa78cfafc49a71b20840abdaa30f9512b0",
+      "diff_sha256": "a59dc493eddcf335e8da134bc9ab6107cd4ef4137e077bc37b673f2794d10a28",
+      "source_repository": "review-bench/ZhuoZhuoCrayon_throttled-py"
+    }
+  ]
+}

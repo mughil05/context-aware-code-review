@@ -1,0 +1,77 @@
+# Baseline review and dev5 benchmark generation/export work; scoring is paused.
+schema_version = 1
+seed = 42
+repetitions = 3
+results_dir = "results"
+cache_dir = ".cache"
+
+[benchmark]
+name = "reviewbench"
+repository = "https://github.com/review-bench/ReviewBench"
+revision = "968291d99e82b3e2969d7e0b4acca62585886c13"
+manifest = "corpus/manifest.json"
+manifest_sha256 = "e74656b8c1c4bbab5ce85f1fcb742a7aaad550a4d7bd46e1f83a0746807bfa02"
+language = "Python"
+categories = ["correctness", "security", "reliability", "performance"]
+scopes = ["introduced-by-pr", "exacerbated-by-pr"]
+# Populate and freeze a repository-disjoint task split before model experiments.
+split_manifest = ""
+
+[models]
+# These values name environment variables, not model identifiers.
+review_model_env = "REVIEW_MODEL"
+verify_model_env = "VERIFY_MODEL"
+embedding_model_env = "EMBEDDING_MODEL"
+judge_model_env = "JUDGE_MODEL"
+# No default paid model or price is assumed.
+
+[review]
+# Temperature omitted by default; set 0.0 only for supported sampling models.
+timeout_seconds = 60.0
+max_output_tokens = 4096
+max_attempts = 1
+# Model-specific input limits must be set before running; never truncate silently.
+input_token_limit = 0
+
+[retrieval]
+context_token_budget = 6000
+max_chunks = 20
+chunk_target_lines = 80
+ranking = "structural_lexical_v1"
+
+[static_analysis]
+tool = "bandit"
+timeout_seconds = 60
+signal_token_budget = 2000
+
+[verification]
+# Development compares drop vs retain; a final run must choose explicitly.
+uncertain_policy = "unresolved"
+
+[evaluation]
+protocol = "reviewbench_existing_ground_truth_pending_review"
+split_seed = 42
+development_repository_fraction = 0.2
+bootstrap_replicates = 2000
+# Judges never reuse verifier verdicts as ground truth.
+human_audit_required = false
+
+[modes.baseline]
+retrieval = false
+static_analysis = false
+verification = false
+
+[modes.retrieval]
+retrieval = true
+static_analysis = false
+verification = false
+
+[modes.tools]
+retrieval = true
+static_analysis = true
+verification = false
+
+[modes.full]
+retrieval = true
+static_analysis = true
+verification = true

@@ -1,0 +1,30 @@
+# Credentials and local configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Python and build output
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Downloaded source, benchmark labels, model responses, and experiment output
+.cache/
+data/
+results/*
+!results/.gitkeep
+
+# Local editor/OS files
+.DS_Store
+.idea/
+.vscode/
