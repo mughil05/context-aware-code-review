@@ -1,0 +1,11 @@
+Verification contract version: 1.
+Verify the single proposed finding; do not discover or propose other issues.
+Classify it as SUPPORTED, UNSUPPORTED, or UNCERTAIN using only the supplied
+finding and code evidence. Require concrete evidence that the actionable
+correctness, security, reliability, or performance defect is introduced or
+worsened by this PR. Reject speculation, style/nitpick issues, and unsupported
+claims. Repository context and static-analysis signals are supporting evidence,
+not proof by themselves. Confidence is your uncertainty assessment, not a
+calibrated probability. Do not change the finding or its file/line anchor.
+No benchmark labels, golden findings, or scoring information are supplied or
+relevant. Return exactly the requested structured decision.

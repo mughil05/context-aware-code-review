@@ -195,6 +195,48 @@ class RepositoryContext(StrictModel):
                 for c in self.chunks if c.selected]
 
 
+class VerificationDecision(StrictModel):
+    proposal_id: Annotated[str, Field(pattern=r'^[0-9a-f]{64}$')]
+    request_sha256: Annotated[str, Field(pattern=r'^[0-9a-f]{64}$')]
+    verdict: Literal['SUPPORTED', 'UNSUPPORTED', 'UNCERTAIN']
+    rationale: Text
+    evidence_references: list[Text]
+    confidence: Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)]
+
+
+class VerificationRecord(StrictModel):
+    status: Literal['success', 'failed']
+    prompt_version: Text
+    prompt_sha256: Annotated[str, Field(pattern=r'^[0-9a-f]{64}$')]
+    provider: Literal['openai']
+    model: Text
+    settings: dict[str, object]
+    request_sha256: Annotated[str, Field(pattern=r'^[0-9a-f]{64}$')] | None
+    proposal_ids: list[Annotated[str, Field(pattern=r'^[0-9a-f]{64}$')]]
+    request_hashes: list[Annotated[str, Field(pattern=r'^[0-9a-f]{64}$')]]
+    decisions: list[VerificationDecision]
+    attempts: list[ModelAttempt]
+    latency_seconds: Annotated[float, Field(ge=0, allow_inf_nan=False)]
+    error: Text | None = None
+
+    @model_validator(mode='after')
+    def consistent(self) -> Self:
+        if self.status == 'success' and (self.error is not None or len(self.proposal_ids) != len(self.decisions)
+                                         or len(self.request_hashes) != len(self.proposal_ids)):
+            raise ValueError('successful verification must decide every proposal')
+        if self.status == 'failed' and self.error is None:
+            raise ValueError('failed verification requires an error')
+        decision_ids = [d.proposal_id for d in self.decisions]
+        if (decision_ids != self.proposal_ids[:len(decision_ids)]
+                or len(self.request_hashes) > len(self.proposal_ids)
+                or len(self.request_hashes) < len(self.decisions)):
+            raise ValueError('verification decisions must be an ordered proposal prefix')
+        if any(decision.request_sha256 != self.request_hashes[index]
+               for index, decision in enumerate(self.decisions)):
+            raise ValueError('verification request hashes must match their decisions')
+        return self
+
+
 class BaselineRun(StrictModel):
     """Provenance envelope around the existing ReviewResult, not another finding schema."""
     result: ReviewResult
@@ -219,3 +261,6 @@ class BaselineRun(StrictModel):
     retrieval_latency_seconds: Annotated[float, Field(ge=0, allow_inf_nan=False)] = 0.0
     static_analysis: dict[str, object] | None = None  # StaticAnalysisResult for tools/full modes
     static_analysis_latency_seconds: Annotated[float, Field(ge=0, allow_inf_nan=False)] = 0.0
+    verification: VerificationRecord | None = None
+    verifier_latency_seconds: Annotated[float, Field(ge=0, allow_inf_nan=False)] = 0.0
+    proposed_findings: list[Finding] = Field(default_factory=list)

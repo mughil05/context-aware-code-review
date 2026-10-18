@@ -95,6 +95,8 @@ def run_review(review_input: ReviewInput, reviewer: OpenAIReviewer, *, mode='bas
         context = RepositoryContext.model_validate(context.model_dump())
         if context.head != review_input.pr.head or context.diff_sha256 != sha256(review_input.diff.encode()):
             raise ValueError('retrieval context belongs to another frozen input')
+        if static_analysis.head != context.head or static_analysis.archive_sha256 != context.archive_sha256:
+            raise ValueError('static analysis belongs to another frozen snapshot')
     started = clock()
     review_input = ReviewInput.model_validate(review_input.model_dump())
     prompt = review_prompt()
@@ -108,7 +110,14 @@ def run_review(review_input: ReviewInput, reviewer: OpenAIReviewer, *, mode='bas
     error = None
     try:
         parsed = parse_diff(review_input.diff)
-        static_signals = static_analysis.payload(reviewer.config.input_token_limit) if static_analysis and mode == 'tools' else None
+        if static_analysis is not None and mode == 'tools':
+            signal_budget = static_analysis.config.get('signal_token_budget', 0)
+            if type(signal_budget) is not int or signal_budget < 0:
+                raise ValueError('static analysis signal budget is invalid')
+            static_signals = static_analysis.payload(signal_budget)
+            static_analysis = static_analysis.model_copy(update={'signals_sent': static_signals})
+        else:
+            static_signals = None
         if mode == 'tools':
             payload = reviewer.payload(review_input.diff, prompt, context=context.payload(), static_signals=static_signals)
         elif context:
@@ -147,3 +156,57 @@ def run_review(review_input: ReviewInput, reviewer: OpenAIReviewer, *, mode='bas
                        retrieval=context, retrieval_latency_seconds=retrieval_latency_seconds,
                        static_analysis=static_analysis.model_dump() if static_analysis else None,
                        static_analysis_latency_seconds=static_analysis_latency_seconds)
+
+
+def run_full(review_input: ReviewInput, reviewer: OpenAIReviewer, verifier: OpenAIReviewer, *,
+             context: RepositoryContext, static_analysis, retrieval_latency_seconds=0.0,
+             static_analysis_latency_seconds=0.0, acquisition_latency_seconds=0.0,
+             signal_budget=0, input_artifact_directory=None, clock=time.perf_counter,
+             tools_run: BaselineRun | None = None) -> BaselineRun:
+    """Mode D: generate the Mode C proposals once, then verify those exact objects."""
+    from reviewer.verification import verify_proposals
+    if static_analysis.status not in ('success', 'no_findings', 'no_files'):
+        prompt = review_prompt()
+        started = clock()
+        result = ReviewResult(pr=review_input.pr, mode='full', status='failed', findings=[],
+                              error='static_analysis_failed: Mode D requires successful Bandit preparation')
+        return BaselineRun(result=result, diff_base=review_input.diff_base or review_input.pr.base,
+                           diff_sha256=sha256(review_input.diff.encode('utf-8')),
+                           requested_model=reviewer.model, settings=review_settings(reviewer),
+                           prompt_sha256=sha256(prompt.encode('utf-8')), prompt_text=prompt,
+                           output_schema=FindingBatch.model_json_schema(), request_sha256=None,
+                           created_at=datetime.now(timezone.utc).isoformat(), attempts=[],
+                           model_latency_seconds=0.0, acquisition_latency_seconds=acquisition_latency_seconds,
+                           total_latency_seconds=acquisition_latency_seconds + retrieval_latency_seconds +
+                           static_analysis_latency_seconds + max(0.0, clock() - started),
+                           input_artifact_directory=input_artifact_directory, retrieval=context,
+                           retrieval_latency_seconds=retrieval_latency_seconds,
+                           static_analysis=static_analysis.model_dump(),
+                           static_analysis_latency_seconds=static_analysis_latency_seconds)
+    tools_run = tools_run or run_review(review_input, reviewer, mode='tools', context=context,
+                           static_analysis=static_analysis,
+                           retrieval_latency_seconds=retrieval_latency_seconds,
+                           static_analysis_latency_seconds=static_analysis_latency_seconds,
+                           acquisition_latency_seconds=acquisition_latency_seconds,
+                           input_artifact_directory=input_artifact_directory, clock=clock)
+    proposals = list(tools_run.result.findings)
+    if tools_run.result.status != 'success':
+        failed_result = tools_run.result.model_copy(update={'mode': 'full'})
+        return tools_run.model_copy(update={'result': failed_result,
+                                            'proposed_findings': proposals})
+    verification = verify_proposals(review_input, proposals, verifier, context=context,
+                                    static_analysis=static_analysis, signal_budget=signal_budget)
+    if verification.status == 'failed':
+        result = ReviewResult(pr=review_input.pr, mode='full', status='failed', findings=[],
+                              error='verification_failed: verifier did not produce a valid decision for every proposal')
+        final_findings = []
+    else:
+        final_findings = [proposal for proposal, decision in zip(proposals, verification.decisions)
+                          if decision.verdict == 'SUPPORTED']
+        result = ReviewResult(pr=review_input.pr, mode='full', status='success', findings=final_findings)
+    return tools_run.model_copy(update={
+        'result': result, 'verification': verification,
+        'verifier_latency_seconds': verification.latency_seconds,
+        'proposed_findings': proposals,
+        'total_latency_seconds': tools_run.total_latency_seconds + verification.latency_seconds,
+    })

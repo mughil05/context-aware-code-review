@@ -8,6 +8,7 @@ from unittest.mock import Mock, patch
 from reviewer.cli import main as cli_main
 from reviewer.config import load_config
 from reviewer.evaluation import run_development_subset
+from reviewer.models import ModelError
 from reviewer.schemas import BaselineRun
 from reviewer.static_analysis import StaticAnalysisResult
 import test_benchmark as fixtures
@@ -124,6 +125,14 @@ class ToolsBenchmarkTests(TestCase):
         self.assertEqual(run.static_analysis['tool'], 'bandit')
         self.assertEqual(run.static_analysis['version'], '1.7.5')
         self.assertGreater(run.static_analysis_latency_seconds, 0)
+        self.assertEqual(run.static_analysis['signals_sent'], [])
+
+        candidate_path = path.parent / 'modes/tools/candidates' / (tools_record['task_id'] + '.json')
+        candidate = json.loads(candidate_path.read_text())
+        serialized_candidate = json.dumps(candidate)
+        self.assertNotIn('static_analysis', serialized_candidate)
+        self.assertNotIn('signals_sent', serialized_candidate)
+        self.assertNotIn(SENTINEL, serialized_candidate)
 
         # Baseline result has no static analysis
         baseline_record = [r for r in report['tasks'] if r['mode'] == 'baseline'][0]
@@ -174,7 +183,9 @@ class ToolsBenchmarkTests(TestCase):
 
         self.assertEqual(report['status'], 'failed')
         # May have made some baseline calls before hitting tools failure
-        self.assertLess(provider._transport.call_count, 10)
+        self.assertEqual(provider._transport.call_count, 0)
+        self.assertEqual(report['tasks'][0]['mode'], 'tools')
+        self.assertEqual(report['tasks'][0]['error_code'], 'static_analysis_failed')
 
     def test_tools_resume_explicitly_unsupported(self):
         """Tools mode resume is explicitly unsupported like retrieval."""
@@ -189,6 +200,95 @@ class ToolsBenchmarkTests(TestCase):
             )
 
         provider._transport.assert_not_called()
+
+    def test_full_verifies_exact_tools_proposals_without_second_review_call(self):
+        """C and D share each task's one generated tools proposal batch."""
+        client, provider = self.snapshot_client(), self.provider()
+        verifier_transport = Mock(side_effect=[self.verification_response() for _ in range(5)])
+        verifier = self.provider()
+        verifier._transport = verifier_transport
+        config = load_config(ROOT / 'configs/experiment.toml')
+        with patch('reviewer.static_analysis.get_bandit_version', return_value='1.7.5'), \
+             patch('reviewer.static_analysis.subprocess.run') as mock_bandit:
+            mock_bandit.return_value = Mock(returncode=0, stdout='{"results": [], "metrics": {}}')
+            path, report = run_development_subset(
+                self.benchmark, provider, client, self.root / 'results',
+                modes=['tools', 'full'], retrieval_config=config.retrieval,
+                static_config=config.static_analysis, cache_dir=self.root / 'cache',
+                verifier=verifier, verify_model='gpt-6-luna')
+
+        self.assertEqual(provider._transport.call_count, 5)  # No second reviewer generation for D.
+        self.assertEqual(verifier_transport.call_count, 5)
+        self.assertEqual(mock_bandit.call_count, 5)
+        self.assertEqual(report['completed_reviews'], 10)
+        for task in self.benchmark.subset.tasks:
+            records = [r for r in report['tasks'] if r['task_id'] == task.task_id]
+            tools_record = next(r for r in records if r['mode'] == 'tools')
+            full_record = next(r for r in records if r['mode'] == 'full')
+            tools_path = path.parent / tools_record['result_file']
+            full_path = path.parent / full_record['result_file']
+            tools_run = BaselineRun.model_validate_json(tools_path.read_bytes())
+            full_run = BaselineRun.model_validate_json(full_path.read_bytes())
+            self.assertEqual(full_run.proposed_findings, tools_run.result.findings)
+            self.assertEqual(full_run.result.findings, tools_run.result.findings)
+            candidate = json.loads((path.parent / full_record['prediction_file']).read_text())
+            self.assertEqual(len(candidate['findings']), 1)
+            self.assertNotIn('verification', json.dumps(candidate))
+
+    @staticmethod
+    def verification_response(verdict='SUPPORTED'):
+        raw = json.dumps({'verdict': verdict, 'rationale': 'The diff supports this defect.',
+                          'evidence_references': ['src/a.py:1'], 'confidence': 0.9})
+        return {'id': 'verify-fixture', 'model': 'gpt-6-luna', 'status': 'completed',
+                'output': [{'type': 'message', 'role': 'assistant', 'status': 'completed',
+                            'content': [{'type': 'output_text', 'text': raw}]}],
+                'usage': {'input_tokens': 20, 'output_tokens': 10, 'total_tokens': 30,
+                          'input_tokens_details': {'cached_tokens': 0},
+                          'output_tokens_details': {'reasoning_tokens': 2}}}
+
+    def test_full_verifier_failure_fails_observation_and_has_no_candidate(self):
+        client, provider = self.snapshot_client(), self.provider()
+        verifier = self.provider(responses=[ModelError('authentication', 'denied')])
+        config = load_config(ROOT / 'configs/experiment.toml')
+        with patch('reviewer.static_analysis.get_bandit_version', return_value='1.7.5'), \
+             patch('reviewer.static_analysis.subprocess.run') as mock_bandit:
+            mock_bandit.return_value = Mock(returncode=0, stdout='{"results": [], "metrics": {}}')
+            path, report = run_development_subset(
+                self.benchmark, provider, client, self.root / 'results', modes=['full'],
+                retrieval_config=config.retrieval, static_config=config.static_analysis,
+                cache_dir=self.root / 'cache', verifier=verifier, verify_model='gpt-6-luna')
+        self.assertEqual(report['status'], 'failed')
+        self.assertEqual(provider._transport.call_count, 1)
+        self.assertEqual(verifier._transport.call_count, 1)
+        full_record = report['tasks'][0]
+        self.assertEqual(full_record['mode'], 'full')
+        self.assertEqual(full_record['status'], 'failed')
+        run_file = path.parent / full_record['result_file']
+        full_run = BaselineRun.model_validate_json(run_file.read_bytes())
+        self.assertEqual(full_run.result.status, 'failed')
+        self.assertEqual(len(full_run.proposed_findings), 1)
+        self.assertFalse((path.parent / 'modes/full/candidates' /
+                          (full_record['task_id'] + '.json')).exists())
+
+    def test_full_only_hides_internal_tools_run_and_exports_no_intermediate_candidate(self):
+        client, provider = self.snapshot_client(), self.provider()
+        verifier = self.provider(responses=[self.verification_response() for _ in range(5)])
+        config = load_config(ROOT / 'configs/experiment.toml')
+        with patch('reviewer.static_analysis.get_bandit_version', return_value='1.7.5'), \
+             patch('reviewer.static_analysis.subprocess.run') as mock_bandit:
+            mock_bandit.return_value = Mock(returncode=0, stdout='{"results": [], "metrics": {}}')
+            path, report = run_development_subset(
+                self.benchmark, provider, client, self.root / 'results', modes=['full'],
+                retrieval_config=config.retrieval, static_config=config.static_analysis,
+                cache_dir=self.root / 'cache', verifier=verifier, verify_model='gpt-6-luna')
+        self.assertEqual(len(report['tasks']), 5)
+        self.assertTrue(all(record['mode'] == 'full' for record in report['tasks']))
+        self.assertEqual(provider._transport.call_count, 5)
+        self.assertEqual(verifier._transport.call_count, 5)
+        self.assertEqual(report['model_attempts'], 10)
+        self.assertFalse((path.parent / 'modes/tools/candidates').exists())
+        self.assertFalse((path.parent / 'modes/tools/runs').exists())
+        self.assertEqual(len(list((path.parent / 'modes/full/candidates').glob('*.json'))), 5)
 
 
 if __name__ == '__main__':

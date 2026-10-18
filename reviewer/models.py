@@ -103,7 +103,8 @@ class OpenAIReviewer:
         self._transport, self._clock, self._sleep = transport, clock, sleep
 
     def payload(self, diff: str, prompt: str, *, context: list[dict] | None = None,
-                static_signals: list[dict] | None = None) -> dict:
+                static_signals: list[dict] | None = None, schema: dict | None = None,
+                schema_name: str = "review_findings") -> dict:
         # Explicit allowlist: never serialize ReviewInput/AcquiredPR or config wholesale.
         evidence = {"diff": diff}
         if context is not None:
@@ -112,8 +113,8 @@ class OpenAIReviewer:
             evidence['static_analysis_signals'] = static_signals
         payload = {"model": self.model, "instructions": prompt,
                    "input": [{"role": "user", "content": json.dumps(evidence, ensure_ascii=False)}],
-                   "text": {"format": {"type": "json_schema", "name": "review_findings",
-                                       "strict": True, "schema": FindingBatch.model_json_schema()}},
+                   "text": {"format": {"type": "json_schema", "name": schema_name,
+                                       "strict": True, "schema": schema or FindingBatch.model_json_schema()}},
                    "max_output_tokens": self.config.max_output_tokens,
                    "store": False, "truncation": "disabled"}
         if self.config.temperature is not None:

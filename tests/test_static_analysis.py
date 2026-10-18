@@ -3,6 +3,7 @@ from contextlib import redirect_stdout
 import io
 import json
 from pathlib import Path
+import subprocess
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest import TestCase, main
@@ -24,15 +25,26 @@ class BanditAdapterTests(TestCase):
 
     def test_bandit_unavailable_returns_specific_status(self):
         """When Bandit is not installed, return tool_unavailable status."""
-        result = run_bandit(self.root, ['test.py'], timeout_seconds=60, head='a' * 40, archive_sha256='b' * 64)
+        with patch('reviewer.static_analysis.get_bandit_version', return_value=None):
+            result = run_bandit(self.root, ['test.py'], timeout_seconds=60,
+                                head='a' * 40, archive_sha256='b' * 64)
         self.assertEqual(result.status, 'tool_unavailable')
         self.assertEqual(result.tool, 'bandit')
         self.assertIsNone(result.version)
         self.assertEqual(result.findings, [])
         self.assertIn('not found', result.error)
 
+    def test_empty_selection_is_not_misreported_as_clean_scan(self):
+        with patch('reviewer.static_analysis.get_bandit_version') as version:
+            result = run_bandit(self.root, [], timeout_seconds=60,
+                                head='a' * 40, archive_sha256='b' * 64)
+        self.assertEqual(result.status, 'no_files')
+        version.assert_not_called()
+
     def test_zero_findings_returns_no_findings_status(self):
         """When Bandit runs but finds nothing, return no_findings status."""
+        target_root = self.root / 'src'; target_root.mkdir()
+        (target_root / 'test.py').write_text('x = 1\n')
         with patch('reviewer.static_analysis.get_bandit_version', return_value='1.7.5'), \
              patch('reviewer.static_analysis.subprocess.run') as mock_run:
             mock_run.return_value = Mock(returncode=0, stdout='{"results": [], "metrics": {}}')
@@ -44,6 +56,9 @@ class BanditAdapterTests(TestCase):
 
     def test_bandit_json_parsing(self):
         """Parse representative Bandit JSON output into internal schema."""
+        target = self.root / 'src/auth.py'
+        target.parent.mkdir()
+        target.write_text('password = "x"\n')
         bandit_output = {
             "results": [
                 {
@@ -74,22 +89,32 @@ class BanditAdapterTests(TestCase):
             self.assertEqual(finding.line_number, 42)
             self.assertEqual(finding.issue_severity, 'LOW')
             self.assertEqual(finding.issue_confidence, 'MEDIUM')
+            command = mock_run.call_args.args[0]
+            self.assertNotIn('-r', command)
+            self.assertEqual(command[-1], str(target))
+            self.assertEqual(mock_run.call_args.kwargs['cwd'], self.root)
+            self.assertEqual(command[command.index('--severity-level') + 1], 'low')
+            self.assertEqual(command[command.index('--confidence-level') + 1], 'low')
+            self.assertEqual(result.config['return_code'], 1)
+            self.assertIsNotNone(result.latency_seconds)
 
     def test_malformed_json_output_fails_gracefully(self):
         """When Bandit returns invalid JSON, return failed status."""
+        (self.root / 'test.py').write_text('x = 1\n')
         with patch('reviewer.static_analysis.get_bandit_version', return_value='1.7.5'), \
              patch('reviewer.static_analysis.subprocess.run') as mock_run:
             mock_run.return_value = Mock(returncode=0, stdout='not json')
             result = run_bandit(self.root, ['test.py'], timeout_seconds=60, head='a' * 40, archive_sha256='b' * 64)
             self.assertEqual(result.status, 'failed')
-            self.assertIn('not valid JSON', result.error)
+            self.assertIn('not valid expected JSON', result.error)
 
     def test_timeout_handling(self):
         """When Bandit times out, return timeout status."""
+        (self.root / 'test.py').write_text('x = 1\n')
         with patch('reviewer.static_analysis.get_bandit_version', return_value='1.7.5'), \
-             patch('reviewer.static_analysis.subprocess.run', side_effect=Exception('timeout')):
+             patch('reviewer.static_analysis.subprocess.run', side_effect=subprocess.TimeoutExpired('bandit', 1)):
             result = run_bandit(self.root, ['test.py'], timeout_seconds=1, head='a' * 40, archive_sha256='b' * 64)
-            self.assertEqual(result.status, 'failed')
+            self.assertEqual(result.status, 'timeout')
 
     def test_payload_respects_budget(self):
         """StaticAnalysisResult.payload() fits findings within budget."""
@@ -128,6 +153,52 @@ class BanditAdapterTests(TestCase):
         serialized_size = len(json.dumps({'static_analysis_signals': payload}).encode())
         self.assertLessEqual(serialized_size, small_budget)
 
+    def test_payload_skips_oversized_signal_and_keeps_later_smaller_signal(self):
+        large = BanditFinding(test_id='B001', test_name='large', issue_severity='HIGH',
+            issue_confidence='HIGH', issue_text='x' * 1000, file='a.py', line_number=1,
+            line_range=[1], more_info='https://example.test')
+        small = BanditFinding(test_id='B002', test_name='small', issue_severity='LOW',
+            issue_confidence='LOW', issue_text='small', file='b.py', line_number=2,
+            line_range=[2], more_info='https://example.test')
+        result = StaticAnalysisResult(tool='bandit', version='1.7.5', head='a' * 40,
+            archive_sha256='b' * 64, analyzed_files=['a.py', 'b.py'], config={},
+            timeout_seconds=60, status='success', error=None, findings=[large, small], metrics=None)
+        selected = result.payload(300)
+        self.assertEqual([item['test_id'] for item in selected], ['B002'])
+
+    def test_bandit_execution_error_is_not_treated_as_empty_success(self):
+        (self.root / 'test.py').write_text('x = 1\n')
+        with patch('reviewer.static_analysis.get_bandit_version', return_value='1.7.5'), \
+             patch('reviewer.static_analysis.subprocess.run') as mock_run:
+            mock_run.return_value = Mock(returncode=2, stdout='',
+                stderr="bandit: error: argument --severity-level: invalid choice: 'LOW'\\n")
+            result = run_bandit(self.root, ['test.py'], timeout_seconds=60,
+                                head='a' * 40, archive_sha256='b' * 64)
+        self.assertEqual(result.status, 'failed')
+        self.assertEqual(result.error, 'bandit exited with status 2 before producing a report')
+        self.assertEqual(result.config['stderr_error_count'], 1)
+        self.assertEqual(result.config['return_code'], 2)
+        self.assertIsNotNone(result.latency_seconds)
+        self.assertEqual(result.findings, [])
+
+    def test_explicit_file_scope_rejects_missing_and_unrequested_results(self):
+        (self.root / 'selected.py').write_text('x = 1\n')
+        with patch('reviewer.static_analysis.get_bandit_version', return_value='1.7.5'):
+            missing = run_bandit(self.root, ['missing.py'], timeout_seconds=60,
+                                 head='a' * 40, archive_sha256='b' * 64)
+        self.assertEqual(missing.status, 'failed')
+        output = {'results': [{'filename': str(self.root / 'other.py'), 'test_id': 'B1',
+                   'test_name': 'other', 'issue_severity': 'HIGH', 'issue_confidence': 'HIGH',
+                   'issue_text': 'out of scope', 'line_number': 1, 'line_range': [1],
+                   'more_info': 'https://example.test'}], 'errors': []}
+        with patch('reviewer.static_analysis.get_bandit_version', return_value='1.7.5'), \
+             patch('reviewer.static_analysis.subprocess.run', return_value=Mock(
+                 returncode=1, stdout=json.dumps(output))):
+            result = run_bandit(self.root, ['selected.py'], timeout_seconds=60,
+                                head='a' * 40, archive_sha256='b' * 64)
+        self.assertEqual(result.status, 'failed')
+        self.assertIn('out-of-scope', result.error)
+
 
 class StaticAnalysisIntegrationTests(TestCase):
     def setUp(self):
@@ -150,10 +221,10 @@ class StaticAnalysisIntegrationTests(TestCase):
             mock_bandit.return_value = StaticAnalysisResult(
                 tool='bandit',
                 version='1.7.5',
-                head=self.inp['pr']['head'],
+                head=self.inp.pr.head,
                 archive_sha256=self.snap.archive_sha256,
                 analyzed_files=[],
-                config={},
+                config={'signal_token_budget': 2000},
                 timeout_seconds=60,
                 status='no_findings',
                 error=None,
@@ -173,10 +244,13 @@ class StaticAnalysisIntegrationTests(TestCase):
         """Static analysis never analyzes benchmark labels or credential files."""
         files_with_artifacts = FILES | {
             'golden/labels.json': '{}',
+            'model_responses/previous_run.py': 'PRIVATE_RESPONSE_SENTINEL = "do not analyze"',
+            'benchmark_data/labels.py': 'PRIVATE_LABEL_SENTINEL = "do not analyze"',
+            'artifacts/model_output.py': 'PRIVATE_OUTPUT_SENTINEL = "do not analyze"',
             'credentials/secrets.py': 'API_KEY = "secret"',
             'results/output.py': 'x = 1',
         }
-        snap = snapshot(self.root, files_with_artifacts, self.inp['pr']['head'], 'snap-artifacts')
+        snap = snapshot(self.root, files_with_artifacts, self.inp.pr.head, 'snap-artifacts')
 
         from reviewer.retrieval import retrieve
         from reviewer.static_analysis import analyze_snapshot
@@ -185,8 +259,8 @@ class StaticAnalysisIntegrationTests(TestCase):
 
         with patch('reviewer.static_analysis.run_bandit') as mock_bandit:
             mock_bandit.return_value = StaticAnalysisResult(
-                tool='bandit', version='1.7.5', head=self.inp['pr']['head'],
-                archive_sha256=snap.archive_sha256, analyzed_files=[], config={},
+                tool='bandit', version='1.7.5', head=self.inp.pr.head,
+                archive_sha256=snap.archive_sha256, analyzed_files=[], config={'signal_token_budget': 2000},
                 timeout_seconds=60, status='no_findings', error=None, findings=[], metrics=None
             )
 
@@ -194,28 +268,48 @@ class StaticAnalysisIntegrationTests(TestCase):
 
             analyzed = mock_bandit.call_args.args[1]
             self.assertNotIn('golden/labels.json', analyzed)
+            self.assertNotIn('model_responses/previous_run.py', analyzed)
+            self.assertNotIn('benchmark_data/labels.py', analyzed)
+            self.assertNotIn('artifacts/model_output.py', analyzed)
             self.assertNotIn('credentials/secrets.py', analyzed)
             self.assertNotIn('results/output.py', analyzed)
 
+    def test_analysis_stages_archive_content_not_mutable_snapshot_directory(self):
+        from reviewer.retrieval import retrieve
+        from reviewer.static_analysis import analyze_snapshot
+
+        context = retrieve(self.inp, self.snap, self.config.retrieval)
+        live_file = self.snap.directory / 'src/pkg/main.py'
+        live_file.write_text('LIVE_WORKTREE_SENTINEL = "must not reach Bandit"\n')
+        observed = {}
+
+        def inspect_staging(root, selected, **kwargs):
+            observed.update({path: (Path(root) / path).read_text() for path in selected})
+            return StaticAnalysisResult(
+                tool='bandit', version='1.7.5', head=self.inp.pr.head,
+                archive_sha256=self.snap.archive_sha256, analyzed_files=selected,
+                config={'signal_token_budget': 2000}, timeout_seconds=60,
+                status='no_findings', error=None, findings=[], metrics=None)
+
+        with patch('reviewer.static_analysis.run_bandit', side_effect=inspect_staging):
+            analyze_snapshot(self.inp, self.snap, context, timeout_seconds=60, budget=2000)
+        self.assertNotIn('LIVE_WORKTREE_SENTINEL', observed['src/pkg/main.py'])
+        self.assertIn('load_user', observed['src/pkg/main.py'])
+
     def test_static_analysis_evidence_cannot_expand_finding_anchors(self):
         """Findings must still anchor to diff-represented HEAD lines, not static analysis locations."""
-        from reviewer.models import OpenAIReviewer
-        from test_baseline import provider as make_provider
+        from reviewer.retrieval import retrieve
+        from test_baseline import BaselineTests, response
 
-        context = SimpleNamespace(
-            head=self.inp['pr']['head'],
-            diff_sha256='a' * 64,
-            chunks=[],
-            payload=lambda: []
-        )
+        context = retrieve(self.inp, self.snap, self.config.retrieval)
 
         static = StaticAnalysisResult(
             tool='bandit',
             version='1.7.5',
-            head=self.inp['pr']['head'],
-            archive_sha256='b' * 64,
+            head=self.inp.pr.head,
+            archive_sha256=self.snap.archive_sha256,
             analyzed_files=['src/pkg/users.py'],
-            config={},
+            config={'signal_token_budget': 2000},
             timeout_seconds=60,
             status='success',
             error=None,
@@ -249,7 +343,7 @@ class StaticAnalysisIntegrationTests(TestCase):
             'confidence': 0.9
         }
 
-        provider = make_provider([bad_finding])
+        provider, _ = BaselineTests().provider(response([bad_finding]))
         run = run_review(self.inp, provider, mode='tools', context=context,
                         static_analysis=static, static_analysis_latency_seconds=1.0)
 
@@ -268,8 +362,9 @@ class ToolsModeTests(TestCase):
         self.config = load_config('configs/experiment.toml')
 
     def provider(self, findings=None):
-        from test_baseline import provider as make_provider
-        return make_provider(findings or [])
+        from test_baseline import BaselineTests, response
+        provider, _ = BaselineTests().provider(response(findings or []))
+        return provider
 
     def test_tools_mode_requires_both_context_and_static_analysis(self):
         """Tools mode must receive retrieval context AND static analysis."""
@@ -284,10 +379,14 @@ class ToolsModeTests(TestCase):
 
         context = retrieve(self.inp, self.snap, self.config.retrieval)
         static = StaticAnalysisResult(
-            tool='bandit', version='1.7.5', head=self.inp['pr']['head'],
-            archive_sha256=self.snap.archive_sha256, analyzed_files=[],
-            config={}, timeout_seconds=60, status='no_findings',
-            error=None, findings=[], metrics=None
+            tool='bandit', version='1.7.5', head=self.inp.pr.head,
+            archive_sha256=self.snap.archive_sha256, analyzed_files=['src/pkg/users.py'],
+            config={'signal_token_budget': 2000}, timeout_seconds=60, status='no_findings',
+            error=None, findings=[BanditFinding(
+                test_id='B105', test_name='hardcoded_password', issue_severity='HIGH',
+                issue_confidence='HIGH', issue_text='Possible hardcoded password',
+                file='src/pkg/users.py', line_number=2, line_range=[2], more_info='https://example.test')],
+            metrics=None
         )
 
         provider_b = self.provider()
@@ -305,10 +404,14 @@ class ToolsModeTests(TestCase):
 
         self.assertEqual(data_b['diff'], data_c['diff'])
         self.assertEqual(data_b.get('repository_context'), data_c.get('repository_context'))
+        for key in ('model', 'instructions', 'text', 'max_output_tokens', 'store', 'truncation'):
+            self.assertEqual(payload_b[key], payload_c[key])
 
         # Only tools mode gets static signals
         self.assertNotIn('static_analysis_signals', data_b)
-        self.assertIn('static_analysis_signals', data_c)
+        self.assertEqual(data_c['static_analysis_signals'], [{
+            'test_id': 'B105', 'severity': 'HIGH', 'confidence': 'HIGH',
+            'file': 'src/pkg/users.py', 'line': 2, 'message': 'Possible hardcoded password'}])
 
     def test_tools_mode_persists_static_analysis_provenance(self):
         """Tools mode results include static analysis result and latency."""
@@ -316,9 +419,9 @@ class ToolsModeTests(TestCase):
 
         context = retrieve(self.inp, self.snap, self.config.retrieval)
         static = StaticAnalysisResult(
-            tool='bandit', version='1.7.5', head=self.inp['pr']['head'],
+            tool='bandit', version='1.7.5', head=self.inp.pr.head,
             archive_sha256=self.snap.archive_sha256, analyzed_files=['src/pkg/main.py'],
-            config={'format': 'json'}, timeout_seconds=60, status='no_findings',
+            config={'format': 'json', 'signal_token_budget': 2000}, timeout_seconds=60, status='no_findings',
             error=None, findings=[], metrics={'_totals': {'loc': 50}}
         )
 
@@ -331,6 +434,7 @@ class ToolsModeTests(TestCase):
         self.assertEqual(run.static_analysis['tool'], 'bandit')
         self.assertEqual(run.static_analysis['version'], '1.7.5')
         self.assertEqual(run.static_analysis_latency_seconds, 2.5)
+        self.assertEqual(run.static_analysis['signals_sent'], [])
 
         # Baseline/retrieval modes have None
         run_baseline = run_review(self.inp, self.provider(), mode='baseline')

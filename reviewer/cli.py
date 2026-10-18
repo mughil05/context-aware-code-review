@@ -8,7 +8,7 @@ import time
 from reviewer.config import load_config, resolve_models, validate_ready
 from reviewer.github import AcquisitionError, GitHubClient
 from reviewer.models import ModelError, OpenAIReviewer
-from reviewer.pipeline import run_baseline, run_review, prepare_context, prepare_static_analysis
+from reviewer.pipeline import run_baseline, run_review, run_full, prepare_context, prepare_static_analysis
 from reviewer.schemas import MODES
 from reviewer.storage import save_run
 
@@ -31,6 +31,9 @@ def _display(run, path) -> None:
             for evidence in finding.evidence:
                 print(f"- {evidence}")
             print(f"\nSuggested fix:\n{finding.suggested_fix}")
+    if run.static_analysis is not None and run.static_analysis.get('status') not in ('success', 'no_findings', 'no_files'):
+        print(f"\nWARNING: Bandit status={run.static_analysis.get('status')}; "
+              "this tools review continued without static-analysis evidence.")
     observed = [attempt.usage for attempt in run.attempts if attempt.usage is not None]
     if observed:
         print(f"\nObserved tokens: input={sum(x.input_tokens for x in observed)}, "
@@ -39,6 +42,13 @@ def _display(run, path) -> None:
         print("\nToken usage: unavailable")
     if len(observed) != len(run.attempts):
         print("Usage is incomplete for one or more attempts; no cost inferred.")
+    if run.verification is not None:
+        verifier_usage = [attempt.usage for attempt in run.verification.attempts if attempt.usage is not None]
+        print(f"Verifier model: {run.verification.model}; status: {run.verification.status}")
+        print(f"Verifier tokens: input={sum(x.input_tokens for x in verifier_usage)}, "
+              f"output={sum(x.output_tokens for x in verifier_usage)}, "
+              f"total={sum(x.total_tokens for x in verifier_usage)}; "
+              f"latency={run.verifier_latency_seconds:.3f}s")
     print(f"Model latency: {run.model_latency_seconds:.3f}s; total: {run.total_latency_seconds:.3f}s")
     print(f"Saved: {path}")
 
@@ -50,9 +60,10 @@ def _mode_group(value):
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="python -m reviewer", description="Diff-only AI code reviewer (baseline).")
+    parser = argparse.ArgumentParser(prog="python -m reviewer",
+                                     description="Review frozen GitHub PRs in baseline, retrieval, tools, or full mode.")
     commands = parser.add_subparsers(dest="command", required=True)
-    review = commands.add_parser("review", help="Review a frozen public PR with the diff-only baseline")
+    review = commands.add_parser("review", help="Review a frozen public PR using an experiment mode")
     review.add_argument("--repo", required=True)
     review.add_argument("--pr", required=True, type=int)
     review.add_argument("--mode", choices=MODES, default="baseline")
@@ -63,7 +74,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     review.add_argument("--context-token-budget", type=int, help="Conservative serialized context budget; retrieval only")
     review.add_argument("--temperature", type=float, help="Optional; only supported sampling models")
     review.add_argument("--results-dir", help="Override result directory")
-    evaluate = commands.add_parser("evaluate", help="Generate five ReviewBench baseline reviews; scoring is paused")
+    evaluate = commands.add_parser("evaluate", help="Generate ReviewBench development reviews; scoring is paused")
     evaluate.add_argument("--benchmark", choices=("reviewbench",), required=True)
     evaluate.add_argument("--modes", nargs="+", type=_mode_group, default=["baseline"], help="baseline,retrieval or space-separated modes")
     evaluate.add_argument("--config", default="configs/experiment.toml")
@@ -85,8 +96,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         if any(mode not in MODES for mode in args.modes):
             parser.error('invalid choice for --modes')
         return _benchmark_main(args, parser)
-    if args.mode not in ('baseline', 'retrieval', 'tools'):
-        parser.error("only baseline, retrieval, and tools review are implemented")
+    if args.mode not in ('baseline', 'retrieval', 'tools', 'full'):
+        parser.error("invalid review mode")
     try:
         config = load_config(args.config)
         if args.input_token_limit is not None:
@@ -106,6 +117,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise ModelError("unsupported_configuration", "only REVIEW_PROVIDER=openai is implemented")
         # Credential/config errors precede all GitHub/network access.
         provider = OpenAIReviewer(models.review.model, config.review)
+        verifier = None
+        if args.mode == 'full':
+            if models.verify is None or models.verify.provider != 'openai':
+                raise ModelError('unsupported_configuration', 'set VERIFY_PROVIDER=openai and VERIFY_MODEL for full mode')
+            verifier = OpenAIReviewer(models.verify.model, config.review)
     except ModelError as error:
         print(f"Configuration error: {error}", file=sys.stderr)
         return 2
@@ -116,7 +132,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
     try:
         started = time.perf_counter()
-        acquired = GitHubClient().acquire(args.repo, args.pr, snapshots=args.mode in ('retrieval', 'tools'), cache_dir=config.cache_dir + "/github")
+        acquired = GitHubClient().acquire(args.repo, args.pr, snapshots=args.mode in ('retrieval', 'tools', 'full'), cache_dir=config.cache_dir + "/github")
         acquisition_latency = time.perf_counter() - started
         if args.mode == 'baseline':
             run = run_baseline(acquired.review_input, provider, acquisition_latency_seconds=acquisition_latency,
@@ -129,7 +145,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                              retrieval_latency_seconds=time.perf_counter() - retrieval_started,
                              acquisition_latency_seconds=acquisition_latency,
                              input_artifact_directory=str(acquired.artifact_directory))
-        else:  # tools mode
+        else:  # tools/full modes
             retrieval_started = time.perf_counter()
             context = prepare_context(acquired.review_input, provider, acquired.head_snapshot, config.retrieval,
                                       cache_dir=config.cache_dir + '/retrieval')
@@ -137,11 +153,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             static_started = time.perf_counter()
             static_analysis = prepare_static_analysis(acquired.review_input, acquired.head_snapshot, context, config.static_analysis)
             static_latency = time.perf_counter() - static_started
-            run = run_review(acquired.review_input, provider, mode='tools', context=context,
-                             static_analysis=static_analysis, static_analysis_latency_seconds=static_latency,
-                             retrieval_latency_seconds=retrieval_latency,
-                             acquisition_latency_seconds=acquisition_latency,
-                             input_artifact_directory=str(acquired.artifact_directory))
+            if args.mode == 'tools':
+                run = run_review(acquired.review_input, provider, mode='tools', context=context,
+                                 static_analysis=static_analysis, static_analysis_latency_seconds=static_latency,
+                                 retrieval_latency_seconds=retrieval_latency,
+                                 acquisition_latency_seconds=acquisition_latency,
+                                 input_artifact_directory=str(acquired.artifact_directory))
+            else:
+                run = run_full(acquired.review_input, provider, verifier, context=context,
+                               static_analysis=static_analysis,
+                               static_analysis_latency_seconds=static_latency,
+                               retrieval_latency_seconds=retrieval_latency,
+                               acquisition_latency_seconds=acquisition_latency,
+                               signal_budget=config.static_analysis.signal_token_budget,
+                               input_artifact_directory=str(acquired.artifact_directory))
         path = save_run(run, config.results_dir)
     except AcquisitionError as error:
         print(f"Acquisition failed: {error}", file=sys.stderr)
@@ -158,8 +183,8 @@ def _benchmark_main(args, parser):
     from reviewer.benchmark import load_benchmark, read_json, REVISION, MANIFEST_SHA256
     from reviewer.evaluation import Pricing, run_development_subset
     if (not args.modes or len(set(args.modes)) != len(args.modes)
-            or any(mode not in ('baseline', 'retrieval', 'tools') for mode in args.modes)):
-        parser.error('only unique baseline/retrieval/tools modes are implemented; scoring is paused')
+            or any(mode not in ('baseline', 'retrieval', 'tools', 'full') for mode in args.modes)):
+        parser.error('invalid or duplicate evaluation mode')
     failure_code = 'invalid_config_file'
     try:
         config = load_config(args.config)
@@ -191,13 +216,20 @@ def _benchmark_main(args, parser):
         pricing = Pricing.model_validate(read_json(Path(args.pricing).read_bytes())) if args.pricing else None
         failure_code = 'invalid_model_configuration'
         reviewer = OpenAIReviewer(models.review.model, config.review)
+        verifier = None
+        if 'full' in args.modes:
+            if models.verify is None or models.verify.provider != 'openai':
+                raise ModelError('unsupported_configuration', 'set VERIFY_PROVIDER=openai and VERIFY_MODEL for full mode')
+            verifier = OpenAIReviewer(models.verify.model, config.review)
         failure_code = 'benchmark_run_failed'
         path, report = run_development_subset(benchmark, reviewer, GitHubClient(),
                                               args.results_dir or config.results_dir, pricing=pricing,
                                               resume_from=args.resume_from, retry_failed=args.retry_failed,
                                               allow_output_budget_change=args.allow_output_budget_change,
                                               modes=args.modes, retrieval_config=config.retrieval,
-                                              cache_dir=config.cache_dir)
+                                              static_config=config.static_analysis,
+                                              cache_dir=config.cache_dir, verifier=verifier,
+                                              verify_model=models.verify.model if models.verify else None)
     except (ValueError, OSError, KeyError, TypeError) as error:
         # Emit only fixed codes, never exception bodies, paths, or Pydantic values.
         if failure_code == 'invalid_benchmark_data':
@@ -221,7 +253,8 @@ def _benchmark_main(args, parser):
             failure_code = 'incompatible_resume: check saved identities/settings and explicit resume flags'
         print(f'Benchmark configuration failed: {failure_code}. No successful benchmark reported.', file=sys.stderr)
         return 2
-    print(f"ReviewBench: {report['status']}; {report['completed_reviews']}/{5 * len(args.modes)} reviews completed")
+    requested_total = 5 * len(args.modes)
+    print(f"ReviewBench: {report['status']}; {report['completed_reviews']}/{requested_total} requested reviews completed")
     print(f"Reused: {report.get('reused_reviews', 0)}; new model attempts: {report['model_attempts']}")
     print('Scoring paused: no matching or precision/recall/F1 computed.')
     print(f'Saved: {path}')

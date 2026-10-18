@@ -1,13 +1,15 @@
-"""Isolated Bandit execution with fixed configuration and JSON output.
+"""Run Bandit only against explicitly selected files from a frozen PR snapshot.
 
-Signals are evidence, not final findings. Record failures and base/head provenance.
-Never install or execute dependencies from a target repository.
+Signals are evidence for review, never final findings. Repository source is read
+from the hash-verified archive and staged in an isolated temporary directory;
+Bandit never receives a checkout or an archive-controlled path.
 """
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import subprocess
 import tempfile
-from typing import Annotated
+import time
+from typing import Annotated, Literal
 
 from pydantic import Field
 
@@ -15,7 +17,7 @@ from reviewer.schemas import CommitSHA, PositiveInt, RepoPath, StrictModel, Text
 
 
 class BanditFinding(StrictModel):
-    """Internal schema for one Bandit issue; not exposed directly to the model."""
+    """Small normalized subset of one Bandit issue."""
     test_id: Text
     test_name: Text
     issue_severity: Text
@@ -28,7 +30,7 @@ class BanditFinding(StrictModel):
 
 
 class StaticAnalysisResult(StrictModel):
-    """Provenance envelope for static analysis execution."""
+    """Static analysis provenance, including the exact evidence sent to the model."""
     tool: Text
     version: Text | None
     head: CommitSHA
@@ -36,42 +38,39 @@ class StaticAnalysisResult(StrictModel):
     analyzed_files: list[RepoPath]
     config: dict[str, object]
     timeout_seconds: PositiveInt
-    status: Text  # 'success', 'no_findings', 'failed', 'timeout', 'tool_unavailable'
+    status: Literal['success', 'no_findings', 'no_files', 'failed', 'timeout', 'tool_unavailable']
+    latency_seconds: Annotated[float, Field(ge=0, allow_inf_nan=False)] | None = None
     error: Text | None
     findings: list[BanditFinding]
-    metrics: dict[str, object] | None  # Bandit's metrics dict if available
+    metrics: dict[str, object] | None
+    signals_sent: list[dict[str, object]] = Field(default_factory=list)
 
     def payload(self, budget: int) -> list[dict]:
-        """Return findings serialized for model input within budget."""
+        """Return stable, concise signal records that fit the configured byte budget."""
+        if type(budget) is not int or budget < 0:
+            raise ValueError('signal budget must be a nonnegative integer')
         items = []
-        for finding in self.findings:
-            item = {
-                'file': finding.file,
-                'line': finding.line_number,
-                'severity': finding.issue_severity,
-                'confidence': finding.issue_confidence,
-                'issue': finding.issue_text,
-                'test_id': finding.test_id,
-            }
-            serialized = json.dumps({'static_analysis_signals': items + [item]}, ensure_ascii=False)
-            if len(serialized.encode('utf-8')) > budget:
-                break
-            items.append(item)
+        findings = sorted(self.findings, key=lambda f: (f.file, f.line_number, f.test_id,
+                                                         f.issue_severity, f.issue_confidence,
+                                                         f.issue_text, f.test_name))
+        for finding in findings:
+            item = {'test_id': finding.test_id, 'severity': finding.issue_severity,
+                    'confidence': finding.issue_confidence, 'file': finding.file,
+                    'line': finding.line_number, 'message': finding.issue_text}
+            candidate = items + [item]
+            size = len(json.dumps({'static_analysis_signals': candidate},
+                                  ensure_ascii=False, sort_keys=True).encode('utf-8'))
+            if size <= budget:
+                items.append(item)
         return items
 
 
 def get_bandit_version() -> str | None:
-    """Attempt to determine Bandit version; return None if unavailable."""
+    """Return the installed tool version, without leaking command output."""
     try:
-        result = subprocess.run(
-            ['bandit', '--version'],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            check=False
-        )
+        result = subprocess.run(['bandit', '--version'], capture_output=True, text=True,
+                                timeout=5, check=False)
         if result.returncode == 0 and result.stdout:
-            # Extract version from output like "bandit 1.7.5"
             parts = result.stdout.strip().split()
             if len(parts) >= 2:
                 return parts[1]
@@ -80,180 +79,181 @@ def get_bandit_version() -> str | None:
         return None
 
 
+def _base_result(*, version, head, archive_sha256, analyzed_files, config,
+                 timeout_seconds, status, error=None, findings=None, metrics=None,
+                 latency_seconds=None):
+    return StaticAnalysisResult(tool='bandit', version=version, head=head,
+                                archive_sha256=archive_sha256,
+                                analyzed_files=analyzed_files, config=config,
+                                timeout_seconds=timeout_seconds, status=status,
+                                latency_seconds=latency_seconds, error=error,
+                                findings=findings or [], metrics=metrics)
+
+
 def run_bandit(snapshot_directory: Path, analyzed_files: list[str], *,
                timeout_seconds: int, head: str, archive_sha256: str) -> StaticAnalysisResult:
-    """Execute Bandit on selected files from the frozen HEAD snapshot.
+    """Run Bandit on an isolated staging directory using explicit files (no -r).
 
-    Never analyze live working tree, benchmark artifacts, or credential files.
+    The caller must create this directory from verified frozen archive bytes.
+    Reject links, missing files and paths escaping staging before spawning Bandit.
     """
+    files = sorted(set(analyzed_files))
+    config = {'format': 'json', 'recursive': False, 'severity': 'low',
+              'confidence': 'low', 'signal_budget_unit': 'serialized_json_utf8_bytes',
+              'selected_files': files, 'selected_file_count': len(files)}
+    if not files:
+        return _base_result(version=None, head=head, archive_sha256=archive_sha256,
+                            analyzed_files=[], config=config, timeout_seconds=timeout_seconds,
+                            status='no_files')
     version = get_bandit_version()
-    config = {'format': 'json', 'analyzed_file_count': len(analyzed_files)}
-
     if version is None:
-        return StaticAnalysisResult(
-            tool='bandit',
-            version=None,
-            head=head,
-            archive_sha256=archive_sha256,
-            analyzed_files=[],
-            config=config,
-            timeout_seconds=timeout_seconds,
-            status='tool_unavailable',
-            error='bandit command not found or version unavailable',
-            findings=[],
-            metrics=None
-        )
-
-    if not analyzed_files:
-        return StaticAnalysisResult(
-            tool='bandit',
-            version=version,
-            head=head,
-            archive_sha256=archive_sha256,
-            analyzed_files=[],
-            config=config,
-            timeout_seconds=timeout_seconds,
-            status='no_findings',
-            error=None,
-            findings=[],
-            metrics=None
-        )
-
-    # Create temporary file with paths to analyze
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as targets:
-        for path in analyzed_files:
-            targets.write(str(snapshot_directory / path) + '\n')
-        targets_file = targets.name
+        return _base_result(version=None, head=head, archive_sha256=archive_sha256,
+                            analyzed_files=[], config=config, timeout_seconds=timeout_seconds,
+                            status='tool_unavailable', error='bandit command not found or version unavailable')
 
     try:
-        # Run Bandit with JSON output, reading from targets file
-        result = subprocess.run(
-            ['bandit', '-f', 'json', '-r'] + [str(snapshot_directory / p) for p in analyzed_files],
-            capture_output=True,
-            text=True,
-            timeout=timeout_seconds,
-            check=False  # Bandit returns non-zero when it finds issues
-        )
-
-        # Parse JSON output
+        root = Path(snapshot_directory).resolve(strict=True)
+        if not root.is_dir():
+            raise ValueError
+    except (OSError, ValueError):
+        return _base_result(version=version, head=head, archive_sha256=archive_sha256,
+                            analyzed_files=[], config=config, timeout_seconds=timeout_seconds,
+                            status='failed', error='static analysis staging directory is unavailable')
+    validated = []
+    for name in files:
+        pure = PurePosixPath(name)
+        if (pure.is_absolute() or not name or any(part in ('', '.', '..') for part in pure.parts)
+                or '\\' in name):
+            return _base_result(version=version, head=head, archive_sha256=archive_sha256,
+                                analyzed_files=[], config=config, timeout_seconds=timeout_seconds,
+                                status='failed', error='unsafe static analysis path')
+        target = root.joinpath(*pure.parts)
         try:
-            data = json.loads(result.stdout) if result.stdout else {}
-        except json.JSONDecodeError:
-            return StaticAnalysisResult(
-                tool='bandit',
-                version=version,
-                head=head,
-                archive_sha256=archive_sha256,
-                analyzed_files=analyzed_files,
-                config=config,
-                timeout_seconds=timeout_seconds,
-                status='failed',
-                error='bandit output was not valid JSON',
-                findings=[],
-                metrics=None
-            )
+            ancestors = [root.joinpath(*pure.parts[:index]) for index in range(1, len(pure.parts))]
+            if (any(parent.is_symlink() for parent in ancestors) or target.is_symlink()
+                    or not target.is_file() or not target.resolve(strict=True).is_relative_to(root)):
+                raise ValueError
+        except (OSError, ValueError):
+            return _base_result(version=version, head=head, archive_sha256=archive_sha256,
+                                analyzed_files=[], config=config, timeout_seconds=timeout_seconds,
+                                status='failed', error='static analysis input is missing or outside frozen staging')
+        validated.append(target)
 
-        # Extract findings
-        findings = []
-        wrapper_prefix = str(snapshot_directory) + '/'
-        for item in data.get('results', []):
-            # Convert absolute path back to repository-relative path
-            abs_path = item.get('filename', '')
-            if not abs_path.startswith(wrapper_prefix):
-                continue
-            rel_path = abs_path[len(wrapper_prefix):]
-
-            findings.append(BanditFinding(
-                test_id=item.get('test_id', 'unknown'),
-                test_name=item.get('test_name', 'unknown'),
-                issue_severity=item.get('issue_severity', 'UNDEFINED'),
-                issue_confidence=item.get('issue_confidence', 'UNDEFINED'),
-                issue_text=item.get('issue_text', ''),
-                file=rel_path,
-                line_number=item.get('line_number', 1),
-                line_range=item.get('line_range', [item.get('line_number', 1)]),
-                more_info=item.get('more_info', '')
-            ))
-
-        metrics = data.get('metrics') if 'metrics' in data else None
-        status = 'success' if findings else 'no_findings'
-
-        return StaticAnalysisResult(
-            tool='bandit',
-            version=version,
-            head=head,
-            archive_sha256=archive_sha256,
-            analyzed_files=analyzed_files,
-            config=config,
-            timeout_seconds=timeout_seconds,
-            status=status,
-            error=None,
-            findings=findings,
-            metrics=metrics
-        )
-
+    command = ['bandit', '-f', 'json', '--severity-level', 'low',
+               '--confidence-level', 'low'] + [str(path) for path in validated]
+    config['invocation'] = ['bandit', '-f', 'json', '--severity-level', 'low',
+                            '--confidence-level', 'low', '<explicit-files>']
+    started = time.perf_counter()
+    try:
+        result = subprocess.run(command, cwd=root, capture_output=True, text=True,
+                                timeout=timeout_seconds, check=False)
+        latency = max(0.0, time.perf_counter() - started)
     except subprocess.TimeoutExpired:
-        return StaticAnalysisResult(
-            tool='bandit',
-            version=version,
-            head=head,
-            archive_sha256=archive_sha256,
-            analyzed_files=analyzed_files,
-            config=config,
-            timeout_seconds=timeout_seconds,
-            status='timeout',
-            error=f'bandit execution exceeded {timeout_seconds}s timeout',
-            findings=[],
-            metrics=None
-        )
+        elapsed = max(0.0, time.perf_counter() - started)
+        config['latency_seconds'] = elapsed
+        return _base_result(version=version, head=head, archive_sha256=archive_sha256,
+                            analyzed_files=files, config=config, timeout_seconds=timeout_seconds,
+                            status='timeout', error=f'bandit execution exceeded {timeout_seconds}s timeout',
+                            latency_seconds=elapsed)
     except (OSError, ValueError) as error:
-        return StaticAnalysisResult(
-            tool='bandit',
-            version=version,
-            head=head,
-            archive_sha256=archive_sha256,
-            analyzed_files=analyzed_files,
-            config=config,
-            timeout_seconds=timeout_seconds,
-            status='failed',
-            error=f'bandit execution failed: {type(error).__name__}',
-            findings=[],
-            metrics=None
-        )
-    finally:
-        try:
-            Path(targets_file).unlink()
-        except OSError:
-            pass
+        elapsed = max(0.0, time.perf_counter() - started)
+        config['latency_seconds'] = elapsed
+        return _base_result(version=version, head=head, archive_sha256=archive_sha256,
+                            analyzed_files=files, config=config, timeout_seconds=timeout_seconds,
+                            status='failed', error=f'bandit execution failed: {type(error).__name__}',
+                            latency_seconds=elapsed)
+
+    config['latency_seconds'] = latency
+    stderr = result.stderr if isinstance(result.stderr, str) else ''
+    stderr_lines = [line.strip() for line in stderr.splitlines() if line.strip()]
+    config['stderr_line_count'] = len(stderr_lines)
+    config['stderr_warning_count'] = sum(line.lower().startswith('warning:') for line in stderr_lines)
+    config['stderr_error_count'] = sum(
+        line.lower().startswith('error:') or ': error:' in line.lower() for line in stderr_lines)
+    config['return_code'] = result.returncode
+    if result.returncode not in (0, 1):
+        return _base_result(version=version, head=head, archive_sha256=archive_sha256,
+                            analyzed_files=files, config=config, timeout_seconds=timeout_seconds,
+                            status='failed', error=f'bandit exited with status {result.returncode} before producing a report',
+                            latency_seconds=latency)
+    try:
+        data = json.loads(result.stdout)
+        if (not isinstance(data, dict) or not isinstance(data.get('results'), list)
+                or not isinstance(data.get('errors', []), list)):
+            raise ValueError
+    except (ValueError, TypeError):
+        return _base_result(version=version, head=head, archive_sha256=archive_sha256,
+                            analyzed_files=files, config=config, timeout_seconds=timeout_seconds,
+                            status='failed', error='bandit output was not valid expected JSON',
+                            latency_seconds=latency)
+
+    config['reported_error_count'] = len(data.get('errors', []))
+    # Bandit returns 1 when findings pass its selected thresholds; only 0/1 are
+    # normal report statuses. The JSON error list and higher return codes fail closed.
+    if data.get('errors'):
+        return _base_result(version=version, head=head, archive_sha256=archive_sha256,
+                            analyzed_files=files, config=config, timeout_seconds=timeout_seconds,
+                            status='failed', error='bandit reported an execution or input error')
+    if result.returncode == 1 and not data['results']:
+        return _base_result(version=version, head=head, archive_sha256=archive_sha256,
+                            analyzed_files=files, config=config, timeout_seconds=timeout_seconds,
+                            status='failed', error='bandit exit status disagreed with its JSON findings',
+                            latency_seconds=latency)
+
+    allowed = {str(path.resolve()): path.relative_to(root).as_posix() for path in validated}
+    findings = []
+    try:
+        for item in data['results']:
+            if not isinstance(item, dict):
+                raise ValueError
+            raw_path = item.get('filename')
+            abs_path = str(Path(raw_path).resolve()) if isinstance(raw_path, str) else ''
+            # Do not silently accept an analyzer report for an unrequested file.
+            if abs_path not in allowed:
+                raise ValueError
+            findings.append(BanditFinding(
+                test_id=item['test_id'], test_name=item['test_name'],
+                issue_severity=item['issue_severity'], issue_confidence=item['issue_confidence'],
+                issue_text=item['issue_text'], file=allowed[abs_path],
+                line_number=item['line_number'], line_range=item['line_range'],
+                more_info=item['more_info']))
+    except (KeyError, TypeError, ValueError):
+        return _base_result(version=version, head=head, archive_sha256=archive_sha256,
+                            analyzed_files=files, config=config, timeout_seconds=timeout_seconds,
+                            status='failed', error='bandit returned malformed or out-of-scope findings')
+
+    metrics = data.get('metrics') if isinstance(data.get('metrics'), dict) else None
+    return _base_result(version=version, head=head, archive_sha256=archive_sha256,
+                        analyzed_files=files, config=config, timeout_seconds=timeout_seconds,
+                        status='success' if findings else 'no_findings', findings=findings, metrics=metrics,
+                        latency_seconds=latency)
 
 
 def analyze_snapshot(review_input, snapshot, context, *, timeout_seconds: int, budget: int):
-    """Run Bandit on changed Python files and selected context files.
-
-    Never analyze benchmark artifacts, credentials, or files outside the frozen snapshot.
-    """
+    """Stage only eligible selected Python source from the verified frozen archive."""
     from reviewer.diff import parse_diff
-    from reviewer.retrieval import eligible
+    from reviewer.retrieval import eligible, snapshot_sources
 
+    sources = snapshot_sources(snapshot, review_input.pr.head)
     parsed = parse_diff(review_input.diff)
-
-    # Changed Python files
     changed_py = {f.new_path for f in parsed if f.new_path and f.new_path.endswith('.py')}
-
-    # Context Python files (already filtered by retrieval exclusions)
-    context_py = set()
-    if context:
-        context_py = {chunk.file for chunk in context.chunks if chunk.selected and chunk.file.endswith('.py')}
-
-    # Combine and ensure all files pass eligibility check
-    analyzed = sorted({f for f in (changed_py | context_py) if eligible(f)})
-
-    result = run_bandit(
-        snapshot.directory,
-        analyzed,
-        timeout_seconds=timeout_seconds,
-        head=review_input.pr.head,
-        archive_sha256=snapshot.archive_sha256
-    )
-
-    return result
+    context_py = ({chunk.file for chunk in context.chunks if chunk.selected and chunk.file.endswith('.py')}
+                  if context else set())
+    selected = sorted((changed_py | context_py) & sources.keys())
+    selected = [path for path in selected if eligible(path)]
+    staging = tempfile.TemporaryDirectory(prefix='reviewer-bandit-')
+    try:
+        root = Path(staging.name).resolve()
+        for path in selected:
+            target = root.joinpath(*PurePosixPath(path).parts)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            # New files in an owned temp root; never follow an archive-provided link.
+            with target.open('xb') as stream:
+                stream.write(sources[path].encode('utf-8'))
+        result = run_bandit(root, selected, timeout_seconds=timeout_seconds,
+                            head=review_input.pr.head, archive_sha256=snapshot.archive_sha256)
+    finally:
+        staging.cleanup()
+    config = dict(result.config)
+    config['signal_token_budget'] = budget
+    return result.model_copy(update={'config': config})

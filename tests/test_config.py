@@ -25,6 +25,7 @@ class ConfigTests(unittest.TestCase):
                  ("review.temperature", float("inf")), ("review.input_token_limit", -1),
                  ("retrieval.max_chunks", 0), ("static_analysis.timeout_seconds", 0),
                  ("verification.uncertain_policy", "guess"),
+                 ("verification.uncertain_policy", "retain"),
                  ("evaluation.development_repository_fraction", 1.0),
                  ("evaluation.human_audit_required", 0),
                  ("benchmark.categories", []), ("benchmark.scopes", ["introduced-by-pr"] * 2),
@@ -75,7 +76,7 @@ class ConfigTests(unittest.TestCase):
         self.config.review.input_token_limit = 16000
         validate_ready(self.config, models, "baseline")
         validate_ready(self.config, models, "retrieval")  # Structural/lexical needs no embedding API.
-        with self.assertRaisesRegex(ValueError, "uncertain"):
+        with self.assertRaisesRegex(ValueError, "verify"):
             validate_ready(self.config, models, "full")
         with self.assertRaisesRegex(ValueError, "unknown"):
             validate_ready(self.config, models, "invalid")

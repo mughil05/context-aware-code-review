@@ -19,7 +19,9 @@ VERSION = 'structural_lexical_v1'
 EXCLUDED = {'vendor', 'vendored', 'third_party', 'node_modules', 'site-packages', 'dist',
             'build', 'target', '__pycache__', 'venv', 'env', 'golden', 'goldens', 'reference',
             'results', 'reviewbench', 'review-bench', 'credentials', 'secrets', 'generated',
-            'scoring', 'scores', 'judgments', 'benchmark_labels'}
+            'scoring', 'scores', 'judgments', 'benchmark_labels', 'benchmark', 'benchmarks',
+            'benchmark_data', 'predictions', 'model_responses', 'responses', 'evaluation',
+            'evaluations', 'artifacts', 'outputs', 'output', 'logs', 'cache'}
 SECRET_NAME = re.compile(r'(^|[_-])(secrets?|credentials?|settings|config|tokens?|passwords?)([_-]|\.|$)', re.I)
 SECRET_CONTENT = re.compile(r'-----BEGIN .*PRIVATE KEY-----|[\"\']?\b\w*(?:api_key|password|secret|access_token)[\"\']?\s*[:=]\s*[\"\'][^\"\']+[\"\']|\b(?:sk-|ghp_)[A-Za-z0-9_-]{16,}', re.I)
 STOP = set(keyword.kwlist) | {'self', 'cls', 'None', 'True', 'False', 'str', 'int', 'bool', 'list', 'dict', 'return', 'py', 'src'}

@@ -62,7 +62,7 @@ class StaticConfig(StrictModel):
 
 
 class VerificationConfig(StrictModel):
-    uncertain_policy: Literal["unresolved", "drop", "retain"]
+    uncertain_policy: Literal["drop"]
 
 
 class EvaluationConfig(StrictModel):
@@ -185,8 +185,6 @@ def validate_ready(config: ExperimentConfig, models: ResolvedModels, mode: Mode,
     # Current retrieval is structural/lexical and needs no embedding provider.
     if config.modes[mode].verification:
         required.append("verify")
-        if config.verification.uncertain_policy == "unresolved":
-            raise ValueError("choose an explicit uncertain policy for full mode")
     if config.review.input_token_limit == 0:
         raise ValueError("set the model-specific input token limit before running")
     optional_tokens = (config.retrieval.context_token_budget if config.modes[mode].retrieval else 0)

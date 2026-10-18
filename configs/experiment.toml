@@ -45,8 +45,8 @@ timeout_seconds = 60
 signal_token_budget = 2000
 
 [verification]
-# Development compares drop vs retain; a final run must choose explicitly.
-uncertain_policy = "unresolved"
+# Conservative Mode D policy: uncertain proposals are excluded from candidates.
+uncertain_policy = "drop"
 
 [evaluation]
 protocol = "reviewbench_existing_ground_truth_pending_review"

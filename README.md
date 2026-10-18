@@ -1,12 +1,11 @@
 # Repository-Aware AI Code Reviewer
 
-**Status: the diff-only OpenAI baseline is implemented with strict output validation,
-frozen read-only GitHub PR acquisition, immutable result storage, and offline tests.
-Five-task ReviewBench baseline generation and prediction export are implemented;
-scoring integration is paused by owner decision. Phase 6 adds deterministic Python
-structural/lexical retrieval from frozen HEAD archives. Semantic embeddings,
-static analysis, and verification are deferred. Phase 5 live development is closed;
-no benchmark quality results exist.**
+**Status: the diff-only OpenAI baseline, deterministic structural/lexical retrieval,
+and Bandit tools mode are implemented with frozen PR inputs, strict output validation,
+and offline tests. Mode D finding verification and paired A-D candidate generation
+are implemented. Five-task ReviewBench candidate generation is implemented;
+scoring integration is paused by owner decision. Semantic embeddings remain deferred.
+No benchmark quality results exist. No Phase 8 live model calls have been made.**
 
 Research question: **Can an AI code reviewer catch more real bugs and produce fewer
 false positives when it understands the surrounding repository instead of seeing
@@ -36,15 +35,16 @@ python -m unittest discover -s tests -v
 For the five-task benchmark generation command, frozen subset, observed upstream
 formats, and scoring limitation, see [Phase 5](docs/reviewbench-phase5.md).
 
-The baseline command makes read-only GitHub requests and a paid OpenAI request when
-explicitly run. No live model call has been made as part of Phase 5 implementation.
-Review supports baseline and retrieval; evaluation supports A/B generation/export
-and requires a pinned benchmark archive. See [Phase 6](docs/retrieval-phase6.md)
+The review command makes read-only GitHub requests and paid OpenAI requests when
+explicitly run. Phase 8 implementation and tests make no model calls. Review supports
+baseline, retrieval, tools, and full; evaluation supports paired A/B/C/D candidate
+generation/export and requires a pinned benchmark archive. See [Phase 6](docs/retrieval-phase6.md)
 for context selection, budgets, exclusions, and offline tests:
 
 ```sh
 python -m reviewer review --repo OWNER/REPO --pr 123 --mode baseline --input-token-limit 16000
 python -m reviewer review --repo OWNER/REPO --pr 123 --mode retrieval --input-token-limit 32000
+python -m reviewer review --repo OWNER/REPO --pr 123 --mode full --input-token-limit 32000
 # Evaluation additionally requires --benchmark-archive PATH:
 python -m reviewer evaluate --benchmark reviewbench --modes baseline,retrieval --benchmark-archive PATH --input-token-limit 32000
 ```
@@ -64,8 +64,9 @@ and credentials before making GitHub requests. Help does not require a ready con
 
 `validate_ready()` checks the selected mode's required models, input budget, and
 uncertain policy. The template intentionally remains unready: no model/provider,
-input token limit, or frozen split is assumed. Final evaluation preflight refuses
-to run until the upstream evaluation approach is reviewed in a later step.
+input token limit, or frozen split is assumed. Full mode requires explicit
+`VERIFY_PROVIDER=openai` and `VERIFY_MODEL`; it reuses the configured review API
+settings and records them with verifier provenance.
 
 Repository inspection on 2026-10-12: the owner confirmed that no local checkout
 existed. The unauthenticated GitHub contents endpoint returned 404, so remote
@@ -108,22 +109,31 @@ flowchart TD
    vendor/build output, and binary data. Semantic embeddings remain deferred;
    neither vectors nor embedding calls are implemented. No vector database or
    full call graph is used. See Phase 6 for exact ranking weights and limitations.
-3. **Static evidence:** integrate Bandit first for security signals. Run with a
-   pinned version, explicit project-owned rule configuration, isolated subprocess,
-   and timeout; consume JSON. Compare base/head and map signals to changed code to
-   distinguish pre-existing issues. A signal alone never becomes a report finding.
-   Failures are recorded as failures, never interpreted as a clean analysis. Ruff
-   defect rules can be added only if development evidence justifies a second tool;
-   style linting and mypy's dependency/stub setup are outside the initial plan.
+3. **Static evidence:** Mode C runs the installed Bandit executable on only explicitly
+   selected eligible Python files staged from the hash-verified frozen HEAD archive.
+   The invocation does not use recursive scanning, records the installed version and
+   timeout/status, and parses JSON. Findings provide rule ID, severity, confidence,
+   file, line, and message; they never become final findings automatically. A normal
+   single-PR review may continue without signals when Bandit fails, with failure
+   provenance and a CLI warning. Benchmark Mode C fails before model execution when
+   Bandit fails, so it cannot silently become Mode B. The version is currently
+   environment-provided rather than pinned, and base/head comparison is not implemented.
+   The configured `signal_token_budget` is currently enforced as a conservative
+   UTF-8 JSON byte ceiling for the concise evidence payload.
+   Run `python scripts/check_bandit_native.py --run <tools.json> --snapshot-dir <cached-pr-artifacts>`
+   to exercise a local Bandit binary against known unsafe/clean fixtures and a saved
+   frozen PR input. This check makes no network or model calls.
 4. **Review:** one concrete OpenAI Responses adapter serves baseline and retrieval.
    It uses standard-library HTTP transport, strict JSON-schema output, local Pydantic
    validation, sanitized errors, and usage/latency recording. Other providers remain
    out of scope until justified. No agent framework is needed.
 5. **Verification:** separately evaluate each proposal against the diff, the same
    retrieved evidence, and available tool signals. Return `SUPPORTED`, `UNSUPPORTED`,
-   or `UNCERTAIN`, with rationale and source references. Suppress unsupported
-   findings; choose uncertain handling on development data. V1 verification makes
-   no extra retrieval calls, keeping its effect easier to isolate.
+   or `UNCERTAIN`, with rationale and source references. Suppress unsupported and
+   uncertain findings from Mode D candidates, retaining every decision in provenance.
+   Mode D verifies the exact single proposal batch generated for Mode C; it never
+   asks the reviewer to regenerate proposals. Set `VERIFY_PROVIDER=openai` and an
+   explicit `VERIFY_MODEL` to run it. V1 verification makes no extra retrieval calls.
 6. **Storage/evaluation:** save every proposal, including rejected ones, independently
    of the final report. Gold labels and judging prompts are available only after
    generation. The verifier's verdict is never an evaluation label.
@@ -134,10 +144,9 @@ Constrain archive extraction, symlinks, input sizes, and subprocess resources.
 
 ## Directory structure
 
-All paths below exist. Schemas, configuration, diff parsing, GitHub acquisition,
-archive handling, the diff-only baseline, and five-task benchmark generation/export
-are implemented. Retrieval, static analysis, and verification remain placeholders;
-semantic scoring is paused.
+Schemas, configuration, diff parsing, frozen GitHub acquisition, the diff-only
+baseline, retrieval, Bandit tools mode, and five-task benchmark generation/export
+are implemented. Verification and semantic scoring remain deferred.
 
 ```text
 context-aware-code-review/
@@ -185,14 +194,15 @@ context-aware-code-review/
 
 ## Dependency decisions
 
-The only runtime dependency is **Pydantic 2**, used now for strict schema/config
-validation and JSON Schema generation. `setuptools` remains the build dependency.
-No packages for future stages are declared as installable extras yet.
+The only declared Python runtime dependency is **Pydantic 2**, used for strict
+schema/config validation and JSON Schema generation. `setuptools` remains the build
+dependency. Tools mode additionally requires a separately installed Bandit executable;
+its version is recorded per run and it is not installed or executed from a target repo.
 
 GitHub HTTP transport uses standard-library `urllib.request`; archive handling uses
 `gzip`/`tarfile`, hashing uses `hashlib`, and the OpenAI Responses adapter uses
-standard-library `urllib.request`. NumPy (future embedding similarity) and Bandit
-(future deterministic evidence) remain planned choices. `unidiff` was not available
+standard-library `urllib.request`. NumPy remains a possible future embedding dependency.
+`unidiff` was not available
 locally under this step's no-network constraint, so `reviewer.diff` implements a
 bounded strict unified-text-diff parser using the standard library. It explicitly
 rejects unsupported formats; it does not attempt general Git patch application.
@@ -412,6 +422,12 @@ descriptions/comments; omit PR descriptions from all four modes to limit hindsig
 leakage. Identical request parameters are used where the chosen model supports
 them, and unsupported settings are recorded rather than silently ignored.
 
+The current shared review contract is prompt v3, including the requirement that
+findings anchor to HEAD-side lines represented in the PR diff. Older v2 baseline or
+retrieval artifacts remain identifiable by their stored prompt hash, but must be
+regenerated under the same frozen v3 prompt/model/settings before inclusion in the
+final A/B/C/D comparison.
+
 Reserve the same diff allocation in every mode. Retrieval/signal budgets are
 additional, so richer modes cannot displace diff tokens. Select a model with
 capacity for all slots. If a diff exceeds the declared limit, use a predeclared
@@ -425,8 +441,9 @@ physical experiment reuses C's output; also record actual experiment spend.
 Additional context necessarily increases token use. These ablations measure the
 benefit and cost of adding capabilities, not a claim about equal-token superiority.
 Use sequential A→B, B→C, C→D differences; this is not a full factorial study of
-interactions. Select drop/retain-uncertain on development F1 (precision breaks a
-tie), freeze it before test generation, and retain both development variants.
+interactions. The current fixed development policy drops uncertain findings;
+future sensitivity analyses may report uncertain findings separately but cannot
+change the primary Mode D candidate policy after seeing test results.
 
 ## ReviewBench inspection and benchmark choice
 
@@ -612,8 +629,8 @@ GitHub acquisition, optional safe snapshots, hashes, and offline tests.
 acquisition and the existing parser, with a versioned prompt, strict `FindingBatch`
 validation, head-line/file anchoring, and saved findings/usage/latency artifacts.
 Automated tests mock model and GitHub network behavior. Structural/lexical retrieval
-now shares that reviewer and the unchanged finding validator. Static analysis,
-verification, semantic embeddings, and benchmark scoring are not implemented.
+now shares that reviewer and the unchanged finding validator. Bandit and Mode D
+verification are implemented; semantic embeddings and benchmark scoring are not.
 
 The approved roadmap is intentionally ordered:
 
@@ -624,7 +641,7 @@ The approved roadmap is intentionally ordered:
    development is closed; the interrupted runs remain immutable historical data.
 4. Repository retrieval (structural/lexical implemented; embeddings deferred).
 5. Static-analysis evidence.
-6. Finding verification.
+6. Finding verification (complete; no model calls performed during implementation).
 7. Final A–D evaluation and documented results.
 
 Each step ends with a file-change report and owner review. All Git operations remain
