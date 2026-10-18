@@ -22,7 +22,7 @@ class ConfigTests(unittest.TestCase):
     def test_bad_settings(self):
         cases = [("repetitions", 0), ("seed", True), ("schema_version", True),
                  ("review.max_attempts", -1), ("review.max_output_tokens", "4096"),
-                 ("review.temperature", float("inf")), ("review.input_token_limit", -1),
+                 ("review.temperature", float("inf")), ("review.request_byte_budget", -1),
                  ("retrieval.max_chunks", 0), ("static_analysis.timeout_seconds", 0),
                  ("verification.uncertain_policy", "guess"),
                  ("verification.uncertain_policy", "retain"),
@@ -71,9 +71,10 @@ class ConfigTests(unittest.TestCase):
 
     def test_mode_specific_readiness(self):
         models = resolve_models(self.config, environment={"REVIEW_MODEL": "model", "REVIEW_PROVIDER": "example"})
-        with self.assertRaisesRegex(ValueError, "input token"):
+        self.config.review.request_byte_budget = 0
+        with self.assertRaisesRegex(ValueError, "serialized-request byte estimator"):
             validate_ready(self.config, models, "baseline")
-        self.config.review.input_token_limit = 16000
+        self.config.review.request_byte_budget = 16000
         validate_ready(self.config, models, "baseline")
         validate_ready(self.config, models, "retrieval")  # Structural/lexical needs no embedding API.
         with self.assertRaisesRegex(ValueError, "verify"):
@@ -87,14 +88,14 @@ class ConfigTests(unittest.TestCase):
             validate_ready(self.config, models, "baseline", final_experiment=True)
 
     def test_full_readiness_with_explicit_settings(self):
-        self.config.review.input_token_limit = 16000
+        self.config.review.request_byte_budget = 16000
         self.config.verification.uncertain_policy = "drop"
         env = {f"{role}_{field}": "example" for role in ("REVIEW", "VERIFY", "EMBEDDING")
                for field in ("MODEL", "PROVIDER")}
         validate_ready(self.config, resolve_models(self.config, environment=env), "full")
 
-    def test_optional_context_cannot_fill_entire_input_budget(self):
-        self.config.review.input_token_limit = 6000
+    def test_optional_context_cannot_fill_entire_request_byte_budget(self):
+        self.config.review.request_byte_budget = 6000
         env = {f"{role}_{field}": "example" for role in ("REVIEW", "EMBEDDING")
                for field in ("MODEL", "PROVIDER")}
         with self.assertRaisesRegex(ValueError, "leave room"):

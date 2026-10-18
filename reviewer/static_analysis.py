@@ -101,15 +101,16 @@ def run_bandit(snapshot_directory: Path, analyzed_files: list[str], *,
     config = {'format': 'json', 'recursive': False, 'severity': 'low',
               'confidence': 'low', 'signal_budget_unit': 'serialized_json_utf8_bytes',
               'selected_files': files, 'selected_file_count': len(files)}
-    if not files:
-        return _base_result(version=None, head=head, archive_sha256=archive_sha256,
-                            analyzed_files=[], config=config, timeout_seconds=timeout_seconds,
-                            status='no_files')
     version = get_bandit_version()
     if version is None:
         return _base_result(version=None, head=head, archive_sha256=archive_sha256,
                             analyzed_files=[], config=config, timeout_seconds=timeout_seconds,
                             status='tool_unavailable', error='bandit command not found or version unavailable')
+
+    if not files:
+        return _base_result(version=version, head=head, archive_sha256=archive_sha256,
+                            analyzed_files=[], config=config, timeout_seconds=timeout_seconds,
+                            status='no_files')
 
     try:
         root = Path(snapshot_directory).resolve(strict=True)
@@ -255,5 +256,5 @@ def analyze_snapshot(review_input, snapshot, context, *, timeout_seconds: int, b
     finally:
         staging.cleanup()
     config = dict(result.config)
-    config['signal_token_budget'] = budget
+    config['signal_byte_budget'] = budget
     return result.model_copy(update={'config': config})

@@ -9,6 +9,7 @@ from pydantic import Field
 from reviewer.archives import sha256
 from reviewer.diff import parse_diff
 from reviewer.models import ModelError, OpenAIReviewer
+from reviewer.request_budget import measure_request
 from reviewer.schemas import (Finding, ModelAttempt, ReviewInput, RepositoryContext,
                               StrictModel, Text, VerificationDecision,
                               VerificationRecord)
@@ -79,6 +80,7 @@ def verify_proposals(review_input: ReviewInput, proposals: list[Finding], verifi
     attempts: list[ModelAttempt] = []
     decisions: list[VerificationDecision] = []
     request_hashes: list[str] = []
+    request_byte_measurements = []
     started = clock()
     error = None
     for proposal_id, proposal in zip(ids, proposals):
@@ -88,6 +90,7 @@ def verify_proposals(review_input: ReviewInput, proposals: list[Finding], verifi
                                       schema=VerifierBatch.model_json_schema(), schema_name='verification_decision')
             request_hashes.append(sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False,
                                                      allow_nan=False).encode('utf-8')))
+            request_byte_measurements.append(measure_request(payload, verifier.config.request_byte_budget))
             reply = verifier.complete(payload)
             attempts.extend(reply.attempts)
             if reply.error:
@@ -105,11 +108,13 @@ def verify_proposals(review_input: ReviewInput, proposals: list[Finding], verifi
                 'temperature_sent': verifier.config.temperature is not None,
                 'max_attempts': verifier.config.max_attempts,
                 'timeout_seconds': verifier.config.timeout_seconds,
-                'input_token_limit': verifier.config.input_token_limit,
+                'request_byte_budget': verifier.config.request_byte_budget,
+                'request_budget_method': 'serialized_request_body_utf8_bytes_plus_4096_safety_margin',
                 'structured_output': 'json_schema_strict', 'store': False,
                 'proposal_calls': len(proposals)}
     return VerificationRecord(status='failed' if error else 'success', prompt_version=PROMPT_VERSION,
                               prompt_sha256=prompt_hash, provider='openai', model=verifier.model,
                               settings=settings, request_sha256=request_hash, proposal_ids=ids,
-                              request_hashes=request_hashes, decisions=decisions, attempts=attempts,
+                              request_hashes=request_hashes, request_byte_measurements=request_byte_measurements,
+                              decisions=decisions, attempts=attempts,
                               latency_seconds=max(0.0, clock() - started), error=error)

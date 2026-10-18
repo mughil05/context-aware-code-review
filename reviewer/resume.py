@@ -98,7 +98,7 @@ def _validate(source, benchmark, reviewer, retry_failed, allow_output_budget_cha
                 or inp.diff_base != record['diff_base']):
             raise ResumeError('resume frozen input differs')
         parsed = parse_diff(inp.diff)
-        # Re-run the existing input budget check for every task before any calls.
+        # Re-run the existing serialized-request byte estimator check for every task before any calls.
         payload = reviewer.payload(inp.diff, prompt)
         reference = read_artifact(source / 'reference' / (key + '.json'))
         if (digest(reference) != record['reference_export_sha256']

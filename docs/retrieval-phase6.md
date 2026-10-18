@@ -64,14 +64,13 @@ semantic implementation without changing the reviewer or anchor validation.
 
 Configure `[retrieval]` in `configs/experiment.toml`:
 
-- `context_token_budget = 6000`: conservative UTF-8 byte estimate of serialized
+- `context_byte_budget = 6000`: conservative UTF-8 byte estimate of serialized
   context, including the second JSON-encoding layer used in the model request.
-  This is **not measured tokenizer usage**. `--context-token-budget` overrides it.
+  This is **not measured tokenizer usage**. `--context-byte-budget` overrides it.
 - `max_chunks = 20` and `chunk_target_lines = 80`.
 - `ranking = "structural_lexical_v1"`.
 
-The available context budget is also limited by space remaining under the existing
-whole-request input limit, reserving JSON overhead. The exact same adapter budget
+The 6,000-unit context cap is a serialized UTF-8 byte estimator cap. Shared B/C/D retrieval selection also reserves the configured 2,000-unit static-signal allowance using a deterministic four-times JSON-escaping reserve plus fixed envelope overhead. The available context is additionally limited by space remaining under the common whole-request byte estimator ceiling. The exact same adapter budget
 check runs on the final payload before any model call. Diff bytes are never removed
 or truncated to make room. Empty context is valid. Output-token settings remain
 independent of both input and context budgets.
@@ -104,13 +103,13 @@ A future single-PR smoke test, requiring explicit authorization before execution
 REVIEW_PROVIDER=openai REVIEW_MODEL=gpt-6-luna \
 /opt/anaconda3/bin/python -m reviewer review \
   --repo pallets/itsdangerous --pr 378 --mode retrieval \
-  --input-token-limit 32000 --max-output-tokens 8192 \
-  --context-token-budget 6000
+  --request-byte-budget 32000 --max-output-tokens 8192 \
+  --context-byte-budget 6000
 ```
 
 Benchmark generation accepts `--modes baseline,retrieval` or
 `--modes baseline retrieval`, with the existing benchmark archive/subset arguments.
-All selected task inputs, snapshots, contexts, and input budgets preflight before
+All selected task inputs, snapshots, contexts, and request byte estimator budgets preflight before
 any model request. Each task/mode uses the shared review pipeline, with one attempt
 and fail-fast behavior. Scoring is still paused; this phase did not run ReviewBench.
 

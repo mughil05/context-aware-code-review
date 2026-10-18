@@ -18,7 +18,7 @@ from pydantic import ValidationError
 
 from reviewer.archives import ArchiveError, extract_snapshot, sha256
 from reviewer.diff import DiffParseError, FileDiff, UnsupportedDiffError, parse_diff
-from reviewer.schemas import PRMetadata, ReviewInput, repository_path
+from reviewer.schemas import BenchmarkAggregateMismatch, PRMetadata, ReviewInput, repository_path
 
 API = "https://api.github.com"
 JSON_MEDIA = "application/vnd.github+json"
@@ -189,7 +189,8 @@ class GitHubClient:
                                 max_bytes=limit, archive=archive)
 
     def frozen_input(self, pr: PRMetadata, *, source_repository: str,
-                     expected_counts: tuple[int, int, int], expected_diff_sha256: str) -> ReviewInput:
+                     expected_counts: tuple[int, int, int], expected_diff_sha256: str | None,
+                     allow_benchmark_aggregate_mismatch: bool = False) -> ReviewInput:
         """Reconstruct an immutable benchmark diff, never consulting live PR state.
 
         Reuses HTTP, unified-diff parsing and inventory checks. Small subsets only:
@@ -199,8 +200,9 @@ class GitHubClient:
         source = normalize_repository(source_repository)
         if (len(expected_counts) != 3 or any(type(n) is not int or n < 0 for n in expected_counts)
                 or not 0 < expected_counts[0] < 300
-                or not isinstance(expected_diff_sha256, str)
-                or not re.fullmatch(r'[0-9a-f]{64}', expected_diff_sha256)):
+                or (expected_diff_sha256 is not None and
+                    (not isinstance(expected_diff_sha256, str)
+                     or not re.fullmatch(r'[0-9a-f]{64}', expected_diff_sha256)))):
             raise AcquisitionError('invalid_input', 'invalid frozen input expectations')
         path = f'/repos/{source}/compare/{pr.base}...{pr.head}'
         head = _json(self._get(f'/repos/{source}/commits/{pr.head}'))
@@ -223,15 +225,29 @@ class GitHubClient:
         except (KeyError, TypeError, ValueError):
             raise AcquisitionError('frozen_state_mismatch', 'frozen commit identity or inventory does not match benchmark') from None
         raw = self._get(path, media=DIFF_MEDIA)
-        if sha256(raw) != expected_diff_sha256:
+        if expected_diff_sha256 is not None and sha256(raw) != expected_diff_sha256:
             raise AcquisitionError('hash_mismatch', 'frozen diff differs from subset lock')
         try:
             diff = raw.decode('utf-8')
             parsed = parse_diff(diff)
         except (DiffParseError, UnicodeDecodeError):
             raise AcquisitionError('invalid_diff', 'frozen diff is malformed or unsupported') from None
-        self._check_diff(parsed, files, expected_counts)
-        return ReviewInput(pr=pr, diff=diff, diff_base=diff_base, diff_complete=True)
+        aggregate_mismatch = self._check_diff(
+            parsed, files, expected_counts,
+            allow_aggregate_mismatch=allow_benchmark_aggregate_mismatch)
+        warnings = []
+        if aggregate_mismatch is not None:
+            warnings.append(BenchmarkAggregateMismatch(
+                code='benchmark_aggregate_mismatch',
+                expected_file_count=expected_counts[0], expected_additions=expected_counts[1],
+                expected_deletions=expected_counts[2],
+                reconstructed_file_count=aggregate_mismatch['reconstructed_file_count'],
+                reconstructed_additions=aggregate_mismatch['reconstructed_additions'],
+                reconstructed_deletions=aggregate_mismatch['reconstructed_deletions'],
+                base_sha=pr.base, head_sha=pr.head,
+                mismatch_fields=aggregate_mismatch['mismatch_fields']))
+        return ReviewInput(pr=pr, diff=diff, diff_base=diff_base, diff_complete=True,
+                           acquisition_warnings=warnings)
 
     def _metadata(self, name: str, number: int):
         raw = self._get(f"/repos/{name}/pulls/{number}")
@@ -384,7 +400,7 @@ class GitHubClient:
         return Snapshot(repository, commit, digest, archive_path, target)
 
     @staticmethod
-    def _check_diff(parsed, files, totals):
+    def _check_diff(parsed, files, totals, *, allow_aggregate_mismatch=False):
         if len(parsed) != len(files) or len({file.filename for file in files}) != len(files):
             raise AcquisitionError("incomplete_diff", "diff and changed-file inventory disagree")
         by_name = {file.filename: file for file in files}
@@ -397,5 +413,19 @@ class GitHubClient:
             deleted = sum(line.kind == "deleted" for hunk in patch.hunks for line in hunk.lines)
             if (added, deleted) != (file.additions, file.deletions):
                 raise AcquisitionError("incomplete_diff", "diff line counts disagree with file inventory")
-        if (sum(file.additions for file in files), sum(file.deletions for file in files)) != totals[1:]:
-            raise AcquisitionError("incomplete_diff", "changed-file totals disagree with PR metadata")
+        reconstructed = (sum(file.additions for file in files), sum(file.deletions for file in files))
+        if reconstructed != totals[1:]:
+            if not allow_aggregate_mismatch:
+                raise AcquisitionError("incomplete_diff", "changed-file totals disagree with PR metadata")
+            mismatch_fields = []
+            if reconstructed[0] != totals[1]:
+                mismatch_fields.append('additions')
+            if reconstructed[1] != totals[2]:
+                mismatch_fields.append('deletions')
+            return {
+                'reconstructed_file_count': len(files),
+                'reconstructed_additions': reconstructed[0],
+                'reconstructed_deletions': reconstructed[1],
+                'mismatch_fields': mismatch_fields,
+            }
+        return None

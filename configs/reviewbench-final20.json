@@ -1,0 +1,329 @@
+{
+  "benchmark_revision": "968291d99e82b3e2969d7e0b4acca62585886c13",
+  "manifest_sha256": "e74656b8c1c4bbab5ce85f1fcb742a7aaad550a4d7bd46e1f83a0746807bfa02",
+  "purpose": "final-evaluation",
+  "schema_version": 1,
+  "selection_rule": "Pinned corpus order; language=Python; lines_added+lines_removed<=1000; exclude every task ID in configs/reviewbench-dev5.json.",
+  "tasks": [
+    {
+      "diff_sha256": null,
+      "files_changed": 4,
+      "golden_sha256": "e0869996dac0068075aee269cb84e63ff0e645ecd6ca45257a665592f5c1a8aa",
+      "language": "Python",
+      "lines_added": 94,
+      "lines_removed": 131,
+      "pr": {
+        "base": "7605ceb952066b3e0d2825ec26e42caf1f6cd68b",
+        "head": "252ddc5745e35ff113181c51520891048e348efc",
+        "pr_number": 120,
+        "repo": "https://github.com/JacobPEvans/ansible-splunk"
+      },
+      "source_repository": "review-bench/JacobPEvans_ansible-splunk",
+      "task_id": "JacobPEvans_ansible-splunk_120-252ddc57"
+    },
+    {
+      "diff_sha256": null,
+      "files_changed": 2,
+      "golden_sha256": "5d267a9aeb5225e1d2e5472e3c3e27e27d0f8810c83038f85eac6d461f4d9d4a",
+      "language": "Python",
+      "lines_added": 814,
+      "lines_removed": 0,
+      "pr": {
+        "base": "471774c774a89902228a0b74b696ff7304332437",
+        "head": "de0187b0e5e781ca08ef7d7923e33cba6531c200",
+        "pr_number": 17,
+        "repo": "https://github.com/Mirkiux/featkit"
+      },
+      "source_repository": "review-bench/Mirkiux_featkit",
+      "task_id": "Mirkiux_featkit_17-de0187b0"
+    },
+    {
+      "diff_sha256": null,
+      "files_changed": 2,
+      "golden_sha256": "2db5442ef114812cdb826bae76aff5065545e096fe66490e43176f6351b431cc",
+      "language": "Python",
+      "lines_added": 78,
+      "lines_removed": 7,
+      "pr": {
+        "base": "5d73d0043457328ca1b10d3cd413c4afbe807cca",
+        "head": "2f4b8699bd3703971333cb6e691f8f3132aec0b1",
+        "pr_number": 84,
+        "repo": "https://github.com/NightHawkATL/ntp-dashboard"
+      },
+      "source_repository": "review-bench/NightHawkATL_ntp-dashboard",
+      "task_id": "NightHawkATL_ntp-dashboard_84-2f4b8699"
+    },
+    {
+      "diff_sha256": null,
+      "files_changed": 3,
+      "golden_sha256": "e88b595db4ebe13c13fec460ac29c5c644f340a5c717906cc7228ecc3d1079e0",
+      "language": "Python",
+      "lines_added": 584,
+      "lines_removed": 20,
+      "pr": {
+        "base": "28cb0f12873107287c8f2ba7b7c330339d432c9c",
+        "head": "2378227172859b977f576fa1a1e3dfd4b52fa524",
+        "pr_number": 96,
+        "repo": "https://github.com/NightHawkATL/ntp-dashboard"
+      },
+      "source_repository": "review-bench/NightHawkATL_ntp-dashboard",
+      "task_id": "NightHawkATL_ntp-dashboard_96-23782271"
+    },
+    {
+      "diff_sha256": null,
+      "files_changed": 35,
+      "golden_sha256": "ab0d39325a2e6e19804b2f7cc65aeef091042a60fe76b2b144c6dbc9dd21b206",
+      "language": "Python",
+      "lines_added": 717,
+      "lines_removed": 62,
+      "pr": {
+        "base": "6129477bd5b7b69876264efe2d2bdf87e29814b5",
+        "head": "928703e96a78a92ab527b32140717995898f3d81",
+        "pr_number": 115,
+        "repo": "https://github.com/biralavor/42_transcendence"
+      },
+      "source_repository": "review-bench/biralavor_42_transcendence",
+      "task_id": "biralavor_42_transcendence_115-928703e9"
+    },
+    {
+      "diff_sha256": null,
+      "files_changed": 9,
+      "golden_sha256": "d9b6d70a5cc5fd80c2f7d651f65bc0999f80a5c9eb674c2e7bce7a43fc11b41b",
+      "language": "Python",
+      "lines_added": 422,
+      "lines_removed": 105,
+      "pr": {
+        "base": "4d3e6a709035034b02f8a20fa5de158750f2a305",
+        "head": "e40744b3e202baec480f06c308d3ef071918bc1f",
+        "pr_number": 4,
+        "repo": "https://github.com/cybershoe/PingBar"
+      },
+      "source_repository": "review-bench/cybershoe_PingBar",
+      "task_id": "cybershoe_PingBar_4-e40744b3"
+    },
+    {
+      "diff_sha256": null,
+      "files_changed": 1,
+      "golden_sha256": "4c4c46b10d82e25b8329f87d7b60f2bc5bc4547f0c8fc3b49ba3a400a28835ca",
+      "language": "Python",
+      "lines_added": 10,
+      "lines_removed": 20,
+      "pr": {
+        "base": "c7c2bb9a034bc6e31379a987fb2f461d31ec9362",
+        "head": "71c014962453f10d3d40ee8c6ff10ab517a1fa68",
+        "pr_number": 18,
+        "repo": "https://github.com/godotengine/godot-angle-static"
+      },
+      "source_repository": "review-bench/godotengine_godot-angle-static",
+      "task_id": "godotengine_godot-angle-static_18-71c01496"
+    },
+    {
+      "diff_sha256": null,
+      "files_changed": 10,
+      "golden_sha256": "d86230a942be1b7f72e5c47b91645f18394ee7aab80e5c7a0e7ead9d8500bebf",
+      "language": "Python",
+      "lines_added": 385,
+      "lines_removed": 17,
+      "pr": {
+        "base": "3d6d8d760d62008d395e852e2d73fc42e78fc039",
+        "head": "051c9cf394ac3f247779034233df9e9590887993",
+        "pr_number": 30,
+        "repo": "https://github.com/gtronset/tablo-legacy-m3u"
+      },
+      "source_repository": "review-bench/gtronset_tablo-legacy-m3u",
+      "task_id": "gtronset_tablo-legacy-m3u_30-051c9cf3"
+    },
+    {
+      "diff_sha256": null,
+      "files_changed": 2,
+      "golden_sha256": "8146f47fa150742cb733b376a1b2b7747adcd43c8a504c34d3042467ad2dcb81",
+      "language": "Python",
+      "lines_added": 25,
+      "lines_removed": 4,
+      "pr": {
+        "base": "7cb64a6bd0840f915629b067f44f0d8cc915253a",
+        "head": "67c39c630a7b2f8750d7d2be7bc62f770d1c6428",
+        "pr_number": 1550,
+        "repo": "https://github.com/jannekbuengener/Claire_de_Binare"
+      },
+      "source_repository": "review-bench/jannekbuengener_Claire_de_Binare",
+      "task_id": "jannekbuengener_Claire_de_Binare_1550-67c39c63"
+    },
+    {
+      "diff_sha256": null,
+      "files_changed": 3,
+      "golden_sha256": "1ccd9a1714e1702af2719e22a62e2723df7fcc12ec8b2279438a2017b8ee8a96",
+      "language": "Python",
+      "lines_added": 9,
+      "lines_removed": 122,
+      "pr": {
+        "base": "5a11f6a074bb84abaf4cd79355c6dcad987cfc52",
+        "head": "345c542111cf72a59552431dd06d2ab001e0cc40",
+        "pr_number": 393,
+        "repo": "https://github.com/laser-base/laser-core"
+      },
+      "source_repository": "review-bench/laser-base_laser-core",
+      "task_id": "laser-base_laser-core_393-345c5421"
+    },
+    {
+      "diff_sha256": null,
+      "files_changed": 3,
+      "golden_sha256": "d42c2160b91b72c2979afaea7f1379fb76df773a27d700e66312f0d45a427557",
+      "language": "Python",
+      "lines_added": 80,
+      "lines_removed": 0,
+      "pr": {
+        "base": "5a8047f5bc592e5e170d3828e9633dd018f13cbe",
+        "head": "b44013c3e80fd71ca639ee272b88c5e07af4b507",
+        "pr_number": 1,
+        "repo": "https://github.com/mareklesko/ProxmoxMCP-Plus"
+      },
+      "source_repository": "review-bench/mareklesko_ProxmoxMCP-Plus",
+      "task_id": "mareklesko_ProxmoxMCP-Plus_1-b44013c3"
+    },
+    {
+      "diff_sha256": null,
+      "files_changed": 6,
+      "golden_sha256": "a0061407fbca43c27e12320612c16105770dbbd51b9a6f8c157757b533ad26ee",
+      "language": "Python",
+      "lines_added": 84,
+      "lines_removed": 10,
+      "pr": {
+        "base": "adfd09b776343d041eaa1109d06282867580084a",
+        "head": "a1d2b3e09cc4cb67477de2abc4ecfb429c37aa13",
+        "pr_number": 34,
+        "repo": "https://github.com/melroyanthony/healthstream-rag"
+      },
+      "source_repository": "review-bench/melroyanthony_healthstream-rag",
+      "task_id": "melroyanthony_healthstream-rag_34-a1d2b3e0"
+    },
+    {
+      "diff_sha256": null,
+      "files_changed": 5,
+      "golden_sha256": "d154ceb1eb262570ed87b9759485ec5071c2b7db45f1acdefa9fc54e180c042c",
+      "language": "Python",
+      "lines_added": 42,
+      "lines_removed": 10,
+      "pr": {
+        "base": "5575427b46328a907e5c4b15ee3bfa341ba85907",
+        "head": "9421a7142852552900aa26fa86027ac6cd6cddb9",
+        "pr_number": 964,
+        "repo": "https://github.com/nipoppy/nipoppy"
+      },
+      "source_repository": "review-bench/nipoppy_nipoppy",
+      "task_id": "nipoppy_nipoppy_964-9421a714"
+    },
+    {
+      "diff_sha256": null,
+      "files_changed": 7,
+      "golden_sha256": "73c82ec7b30c9b7cf82fcfccc93b59df5df8afe96d5b84e9dbe2ff7942a4834c",
+      "language": "Python",
+      "lines_added": 95,
+      "lines_removed": 19,
+      "pr": {
+        "base": "e7e2065f7e50e2525683947d6ec6e39d79ad2f4c",
+        "head": "fced06441c1e3969952312e13525ee355d7a9356",
+        "pr_number": 48,
+        "repo": "https://github.com/resplab/leap"
+      },
+      "source_repository": "review-bench/resplab_leap",
+      "task_id": "resplab_leap_48-fced0644"
+    },
+    {
+      "diff_sha256": null,
+      "files_changed": 16,
+      "golden_sha256": "3888817c97612010f6e0df66cdc91605ae3967ff3a7dd9661b32d9bf39dc0fb1",
+      "language": "Python",
+      "lines_added": 24,
+      "lines_removed": 862,
+      "pr": {
+        "base": "c7ad43487d4ae9bc3ed85a6ea2838b81b1ea2cd8",
+        "head": "e249f90f89cf7cc8c92205a4e8dba2703a6fa176",
+        "pr_number": 33,
+        "repo": "https://github.com/shartma2/TTP_v2"
+      },
+      "source_repository": "review-bench/shartma2_TTP_v2",
+      "task_id": "shartma2_TTP_v2_33-e249f90f"
+    },
+    {
+      "diff_sha256": null,
+      "files_changed": 4,
+      "golden_sha256": "5931e7e010895636bb437aa2263667f7008a5cfa8ad10a898fcad8dd42e40d1c",
+      "language": "Python",
+      "lines_added": 112,
+      "lines_removed": 0,
+      "pr": {
+        "base": "ffba1ee697ab328c53a074476269c298fdd3f389",
+        "head": "a2fa89b78692d7026d34a60b81177fa557b69b93",
+        "pr_number": 51,
+        "repo": "https://github.com/shaypal5/pr-agent-context"
+      },
+      "source_repository": "review-bench/shaypal5_pr-agent-context",
+      "task_id": "shaypal5_pr-agent-context_51-a2fa89b7"
+    },
+    {
+      "diff_sha256": null,
+      "files_changed": 13,
+      "golden_sha256": "0a95ca38107e3e33cfb0539aed2f8a015e029fabdf703d8cd793abd88311d3f3",
+      "language": "Python",
+      "lines_added": 635,
+      "lines_removed": 15,
+      "pr": {
+        "base": "a1024c89f97abe95af0537d3a83f5ce54a207993",
+        "head": "7c51cc54400b8a4b62b118c3d196a611f38a9e1d",
+        "pr_number": 75,
+        "repo": "https://github.com/shaypal5/pr-agent-context"
+      },
+      "source_repository": "review-bench/shaypal5_pr-agent-context",
+      "task_id": "shaypal5_pr-agent-context_75-7c51cc54"
+    },
+    {
+      "diff_sha256": null,
+      "files_changed": 1,
+      "golden_sha256": "988b0a85b1f8ce78389855e2b56c09980d307c9da90179eaa16af7e13bdc914d",
+      "language": "Python",
+      "lines_added": 664,
+      "lines_removed": 0,
+      "pr": {
+        "base": "f4a1003609b2a7cf6daf9da9e8ab5432ffefd9d7",
+        "head": "c2c05c5fd648d75946b1fecc6041f83cb81dc99c",
+        "pr_number": 1760,
+        "repo": "https://github.com/tableau/server-client-python"
+      },
+      "source_repository": "review-bench/tableau_server-client-python",
+      "task_id": "tableau_server-client-python_1760-c2c05c5f"
+    },
+    {
+      "diff_sha256": null,
+      "files_changed": 4,
+      "golden_sha256": "1229e603161db2c4928a9dad449c8e08f9b984e3b57912db2e16c690c31bdadb",
+      "language": "Python",
+      "lines_added": 273,
+      "lines_removed": 247,
+      "pr": {
+        "base": "517d9438a608dd59a5f4ee08bdc746958beb6cce",
+        "head": "574d04dc2f085ff0251de6893488afc4dfe7822c",
+        "pr_number": 864,
+        "repo": "https://github.com/tile-ai/TileOPs"
+      },
+      "source_repository": "review-bench/tile-ai_TileOPs",
+      "task_id": "tile-ai_TileOPs_864-574d04dc"
+    },
+    {
+      "diff_sha256": null,
+      "files_changed": 6,
+      "golden_sha256": "76a02c91194b43934ac48637f842cdab3258d3a04981e6b6ece6fb1334acb9f7",
+      "language": "Python",
+      "lines_added": 183,
+      "lines_removed": 21,
+      "pr": {
+        "base": "5a2c993caa9c1183f58b1cc50aea6a2609d96959",
+        "head": "7604bc745c38d151e23b8f7528a65f74c2613545",
+        "pr_number": 133,
+        "repo": "https://github.com/torchfont/torchfont"
+      },
+      "source_repository": "review-bench/torchfont_torchfont",
+      "task_id": "torchfont_torchfont_133-7604bc74"
+    }
+  ]
+}

@@ -23,7 +23,7 @@ MODEL = "gpt-4.1-mini-2025-04-14"
 
 
 def config(**updates):
-    return ReviewConfig(max_output_tokens=4096, max_attempts=1, input_token_limit=16000, **updates)
+    return ReviewConfig(max_output_tokens=4096, max_attempts=1, request_byte_budget=16000, **updates)
 
 
 def review_input(diff=DIFF.decode()):
@@ -201,9 +201,9 @@ class BaselineTests(unittest.TestCase):
 
     def test_budget_and_bad_diff_prevent_model_calls(self):
         provider, transport = self.provider()
-        provider.config.input_token_limit = 1
+        provider.config.request_byte_budget = 1
         run = run_baseline(review_input(), provider)
-        self.assertIn("input_budget", run.result.error)
+        self.assertIn("request_byte_budget_exceeded", run.result.error)
         self.assertIsNone(run.request_sha256)
         transport.assert_not_called()
         provider, transport = self.provider()

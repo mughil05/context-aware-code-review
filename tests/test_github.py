@@ -9,6 +9,8 @@ from urllib.error import HTTPError, URLError
 from http.client import IncompleteRead
 
 from reviewer.archives import sha256
+from reviewer.benchmark import Task, reconstruct
+from reviewer.diff import parse_diff
 from reviewer.github import API, DIFF_MEDIA, AcquisitionError, GitHubClient, _download, normalize_repository
 from reviewer.schemas import ReviewInput
 from test_archives import archive_bytes
@@ -25,6 +27,30 @@ def metadata():
 
 def file_record(name="src/a.py"):
     return {"filename": name, "status": "modified", "additions": 1, "deletions": 1}
+
+
+def diagnosed_benchmark_diff():
+    """Text fixture with the pinned PR #120 per-file totals: 4 files, +91/-131."""
+    specs = [
+        ('.claude/rules/nix-tool-execution.md', 'removed', 0, 15),
+        ('CHANGELOG.md', 'modified', 0, 3),
+        ('CLAUDE.md', 'modified', 38, 113),
+        ('roles/splunk_docker/README.md', 'modified', 53, 0),
+    ]
+    records, chunks = [], []
+    for path, status, additions, deletions in specs:
+        records.append({'filename': path, 'previous_filename': None,
+                        'status': status, 'additions': additions, 'deletions': deletions})
+        chunks.append(f'diff --git a/{path} b/{path}\n')
+        if status == 'removed':
+            chunks.append('deleted file mode 100644\n')
+        chunks.extend((f'--- a/{path}\n', '+++ /dev/null\n' if status == 'removed' else f'+++ b/{path}\n'))
+        old_start = 1 if deletions else 0
+        new_start = 1 if additions else 0
+        chunks.append(f'@@ -{old_start},{deletions} +{new_start},{additions} @@\n')
+        chunks.extend('-old line\n' for _ in range(deletions))
+        chunks.extend('+new line\n' for _ in range(additions))
+    return ''.join(chunks).encode(), records
 
 
 class FakeGitHub:
@@ -130,6 +156,57 @@ class AcquisitionTests(unittest.TestCase):
                        lambda: self.fake.metadata.update(additions=2)):
             self.fake = FakeGitHub(); self.client = GitHubClient(token="", downloader=self.fake)
             mutate(); self.assert_error("incomplete_diff")
+
+    def test_live_acquisition_still_rejects_aggregate_total_mismatch(self):
+        self.fake.metadata.update(additions=94)
+        with self.assertRaisesRegex(AcquisitionError, 'changed-file totals disagree'):
+            self.acquire()
+
+    def test_benchmark_reconstruction_audits_aggregate_mismatch_but_preserves_frozen_checks(self):
+        data = json.loads((Path(__file__).resolve().parents[1] / 'configs/reviewbench-final20.json').read_text())
+        task_data = next(item for item in data['tasks']
+                         if item['task_id'] == 'JacobPEvans_ansible-splunk_120-252ddc57')
+        task = Task.model_validate(task_data)
+        diff, records = diagnosed_benchmark_diff()
+        base, head = task.pr.base, task.pr.head
+        def make_transport(*, returned_head=head, file_records=records, raw_diff=diff):
+            def transport(url, **kwargs):
+                if '/commits/' in url:
+                    return json.dumps({'sha': returned_head}).encode()
+                if kwargs['headers']['Accept'] == DIFF_MEDIA:
+                    return raw_diff
+                return json.dumps({'base_commit': {'sha': base}, 'merge_base_commit': {'sha': base},
+                                   'files': file_records}).encode()
+            return transport
+        client = GitHubClient(token='', downloader=make_transport())
+        result = reconstruct(task, client)
+        self.assertEqual(result.pr.base, base)
+        self.assertEqual(result.pr.head, head)
+        self.assertEqual(len(result.acquisition_warnings), 1)
+        warning = result.acquisition_warnings[0].model_dump()
+        self.assertEqual(warning, {
+            'code': 'benchmark_aggregate_mismatch', 'expected_file_count': 4,
+            'expected_additions': 94, 'expected_deletions': 131,
+            'reconstructed_file_count': 4, 'reconstructed_additions': 91,
+            'reconstructed_deletions': 131, 'base_sha': base, 'head_sha': head,
+            'mismatch_fields': ['additions'],
+        })
+        self.assertEqual((len(parse_diff(result.diff)),
+                          sum(line.startswith('+') and not line.startswith('+++') for line in result.diff.splitlines()),
+                          sum(line.startswith('-') and not line.startswith('---') for line in result.diff.splitlines())),
+                         (4, 91, 131))
+        matching_task = task.model_copy(update={'lines_added': 91})
+        matching = reconstruct(matching_task, GitHubClient(token='', downloader=make_transport()))
+        self.assertEqual(matching.acquisition_warnings, [])
+        wrong_head = GitHubClient(token='', downloader=make_transport(returned_head='f'*40))
+        with self.assertRaisesRegex(AcquisitionError, 'frozen_state_mismatch'):
+            reconstruct(task, wrong_head)
+        wrong_files = [dict(item) for item in records]
+        wrong_files[2]['additions'] += 1
+        with self.assertRaisesRegex(AcquisitionError, 'line counts disagree'):
+            reconstruct(task, GitHubClient(token='', downloader=make_transport(file_records=wrong_files)))
+        with self.assertRaisesRegex(AcquisitionError, 'invalid_diff'):
+            reconstruct(task, GitHubClient(token='', downloader=make_transport(raw_diff=diff + b'\n')))
 
     def test_empty_pr(self):
         self.fake.diff = b""; self.fake.files = []

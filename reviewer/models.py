@@ -13,6 +13,7 @@ from pydantic import ValidationError
 
 from reviewer.config import ReviewConfig
 from reviewer.schemas import FindingBatch, ModelAttempt, TokenUsage
+from reviewer.request_budget import measure_request
 
 
 class ModelError(ValueError):
@@ -93,8 +94,8 @@ class OpenAIReviewer:
             r"(?:gpt-4\.1(?:-mini|-nano)?|gpt-4o(?:-mini)?)(?:-\d{4}-\d{2}-\d{2})?", model
         ):
             raise ModelError("unsupported_configuration", "omit temperature for models outside the supported sampling families")
-        if config.input_token_limit <= 0:
-            raise ModelError("unsupported_configuration", "set an explicit input token budget")
+        if config.request_byte_budget <= 0:
+            raise ModelError("unsupported_configuration", "set an explicit request byte estimator ceiling")
         key = os.environ.get("OPENAI_API_KEY", "") if api_key is None else api_key
         if not isinstance(key, str) or not key.strip() or any(ord(c) < 33 or ord(c) > 126 for c in key):
             raise ModelError("missing_api_key", "set OPENAI_API_KEY to a valid nonempty value")
@@ -105,26 +106,10 @@ class OpenAIReviewer:
     def payload(self, diff: str, prompt: str, *, context: list[dict] | None = None,
                 static_signals: list[dict] | None = None, schema: dict | None = None,
                 schema_name: str = "review_findings") -> dict:
-        # Explicit allowlist: never serialize ReviewInput/AcquiredPR or config wholesale.
-        evidence = {"diff": diff}
-        if context is not None:
-            evidence['repository_context'] = context
-        if static_signals is not None:
-            evidence['static_analysis_signals'] = static_signals
-        payload = {"model": self.model, "instructions": prompt,
-                   "input": [{"role": "user", "content": json.dumps(evidence, ensure_ascii=False)}],
-                   "text": {"format": {"type": "json_schema", "name": schema_name,
-                                       "strict": True, "schema": schema or FindingBatch.model_json_schema()}},
-                   "max_output_tokens": self.config.max_output_tokens,
-                   "store": False, "truncation": "disabled"}
-        if self.config.temperature is not None:
-            payload["temperature"] = self.config.temperature
-        # Intentionally conservative size estimate, NOT measured token usage. Refuse
-        # rather than truncate. API context checks remain authoritative for the model.
-        byte_estimate = len(json.dumps(payload, ensure_ascii=False).encode("utf-8")) + 4096
-        if byte_estimate > self.config.input_token_limit:
-            raise ModelError("input_budget", "request exceeds conservative input budget; diff was not truncated")
-        return payload
+        return build_review_payload(self.model, self.config, diff, prompt, context=context,
+                                    static_signals=static_signals, schema=schema,
+                                    schema_name=schema_name)
+
 
     def complete(self, payload: dict) -> ModelReply:
         started = self._clock()
@@ -200,3 +185,28 @@ class OpenAIReviewer:
                 return ModelReply(None, tuple(attempts), max(0.0, self._clock() - started), str(failure))
             self._sleep(float(2 ** (number - 1)))
         raise AssertionError("unreachable")
+
+
+def build_review_payload(model: str, config: ReviewConfig, diff: str, prompt: str, *,
+                         context: list[dict] | None = None,
+                         static_signals: list[dict] | None = None,
+                         schema: dict | None = None,
+                         schema_name: str = "review_findings") -> dict:
+    """Pure payload builder shared by paid inference and no-model preflight."""
+    evidence = {"diff": diff}
+    if context is not None:
+        evidence['repository_context'] = context
+    if static_signals is not None:
+        evidence['static_analysis_signals'] = static_signals
+    payload = {"model": model, "instructions": prompt,
+               "input": [{"role": "user", "content": json.dumps(evidence, ensure_ascii=False)}],
+               "text": {"format": {"type": "json_schema", "name": schema_name,
+                                   "strict": True, "schema": schema or FindingBatch.model_json_schema()}},
+               "max_output_tokens": config.max_output_tokens,
+               "store": False, "truncation": "disabled"}
+    if config.temperature is not None:
+        payload["temperature"] = config.temperature
+    measurement = measure_request(payload, config.request_byte_budget)
+    if not measurement["fits"]:
+        raise ModelError("request_byte_budget_exceeded", "request exceeds configured serialized-byte estimator ceiling; diff was not truncated")
+    return payload

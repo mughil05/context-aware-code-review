@@ -51,12 +51,41 @@ class PRMetadata(StrictModel):
         return self
 
 
+class BenchmarkAggregateMismatch(StrictModel):
+    code: Literal["benchmark_aggregate_mismatch"]
+    expected_file_count: Annotated[int, Field(ge=0)]
+    expected_additions: Annotated[int, Field(ge=0)]
+    expected_deletions: Annotated[int, Field(ge=0)]
+    reconstructed_file_count: Annotated[int, Field(ge=0)]
+    reconstructed_additions: Annotated[int, Field(ge=0)]
+    reconstructed_deletions: Annotated[int, Field(ge=0)]
+    base_sha: CommitSHA
+    head_sha: CommitSHA
+    mismatch_fields: Annotated[list[Literal["additions", "deletions"]], Field(min_length=1)]
+
+    @model_validator(mode="after")
+    def consistent_totals(self) -> Self:
+        if self.expected_file_count != self.reconstructed_file_count:
+            raise ValueError("benchmark file-count mismatch is not an aggregate warning")
+        expected = []
+        if self.expected_additions != self.reconstructed_additions:
+            expected.append("additions")
+        if self.expected_deletions != self.reconstructed_deletions:
+            expected.append("deletions")
+        if self.mismatch_fields != expected or not expected:
+            raise ValueError("aggregate mismatch fields do not match recorded totals")
+        return self
+
+
 class ReviewInput(StrictModel):
     pr: PRMetadata
     diff: str  # Empty string is a valid, explicitly empty change set.
     diff_complete: Literal[True]
     # Old-side coordinates use this merge base when set; otherwise pr.base.
     diff_base: CommitSHA | None = None
+    # Benchmark-only acquisition diagnostics. These are persisted as input
+    # provenance and are never included in the reviewer payload.
+    acquisition_warnings: list[BenchmarkAggregateMismatch] = Field(default_factory=list)
 
     @field_validator("diff_complete", mode="before")
     @classmethod
@@ -185,9 +214,12 @@ class RepositoryContext(StrictModel):
     repository: Text
     ranking: Literal['structural_lexical_v1']
     config: dict[str, object]
-    budget_unit: Literal['serialized_utf8_bytes_conservative_token_estimate']
+    budget_unit: Literal['serialized_utf8_bytes']
     budget: Annotated[int, Field(ge=0)]
     used_budget: Annotated[int, Field(ge=0)]
+    overall_request_byte_ceiling: Annotated[int, Field(ge=1)] | None = None
+    reserved_static_signal_byte_cap: Annotated[int, Field(ge=0)] = 0
+    reserved_static_signal_estimator_bytes: Annotated[int, Field(ge=0)] = 0
     chunks: list[ContextChunk]
 
     def payload(self) -> list[dict]:
@@ -204,6 +236,27 @@ class VerificationDecision(StrictModel):
     confidence: Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)]
 
 
+class RequestByteMeasurement(StrictModel):
+    serialized_request_body_utf8_bytes: Annotated[int, Field(ge=0)]
+    safety_margin_bytes: Literal[4096]
+    estimator_value: Annotated[int, Field(ge=4096)]
+    configured_estimator_ceiling: Annotated[int, Field(ge=1)] | None = None
+    estimator_units: Literal['serialized_request_estimator_units']
+    method: Literal['serialized_request_body_utf8_bytes_plus_4096_safety_margin']
+    fits: bool | None = None
+
+    @model_validator(mode='after')
+    def consistent_estimate(self) -> Self:
+        if self.estimator_value != self.serialized_request_body_utf8_bytes + self.safety_margin_bytes:
+            raise ValueError('request estimator must equal serialized body bytes plus safety margin')
+        if self.configured_estimator_ceiling is None:
+            if self.fits is not None:
+                raise ValueError('fit status requires a configured estimator ceiling')
+        elif self.fits != (self.estimator_value <= self.configured_estimator_ceiling):
+            raise ValueError('request estimator fit status is inconsistent')
+        return self
+
+
 class VerificationRecord(StrictModel):
     status: Literal['success', 'failed']
     prompt_version: Text
@@ -214,6 +267,7 @@ class VerificationRecord(StrictModel):
     request_sha256: Annotated[str, Field(pattern=r'^[0-9a-f]{64}$')] | None
     proposal_ids: list[Annotated[str, Field(pattern=r'^[0-9a-f]{64}$')]]
     request_hashes: list[Annotated[str, Field(pattern=r'^[0-9a-f]{64}$')]]
+    request_byte_measurements: list[RequestByteMeasurement] = Field(default_factory=list)
     decisions: list[VerificationDecision]
     attempts: list[ModelAttempt]
     latency_seconds: Annotated[float, Field(ge=0, allow_inf_nan=False)]
@@ -249,6 +303,7 @@ class BaselineRun(StrictModel):
     prompt_text: Text
     output_schema: dict[str, object]
     request_sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")] | None
+    request_byte_measurement: RequestByteMeasurement | None = None
     created_at: Text
     attempts: list[ModelAttempt]
     model_latency_seconds: Annotated[float, Field(ge=0, allow_inf_nan=False)]

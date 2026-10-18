@@ -4,8 +4,9 @@
 and Bandit tools mode are implemented with frozen PR inputs, strict output validation,
 and offline tests. Mode D finding verification and paired A-D candidate generation
 are implemented. Five-task ReviewBench candidate generation is implemented;
-scoring integration is paused by owner decision. Semantic embeddings remain deferred.
-No benchmark quality results exist. No Phase 8 live model calls have been made.**
+the final20 manifest, no-model preflight, and scoped ReviewBench scoring adapter are
+implemented. Semantic embeddings remain deferred. The final benchmark generation
+and judging have not been run; no benchmark quality results exist.**
 
 Research question: **Can an AI code reviewer catch more real bugs and produce fewer
 false positives when it understands the surrounding repository instead of seeing
@@ -22,18 +23,20 @@ Python 3.11+ and Pydantic 2 are required. Install this package in your environme
 with `python -m pip install -e .` when network installation is appropriate, or use
 an existing local environment with Pydantic installed. Help and offline tests do not
 need credentials. A baseline run requires `OPENAI_API_KEY`, `REVIEW_PROVIDER=openai`,
-an explicit `REVIEW_MODEL`, and a model-specific input budget. `.env` is not loaded
+an explicit `REVIEW_MODEL`, and a model-specific request byte estimator ceiling. `.env` is not loaded
 automatically.
 
 ```sh
 python -m reviewer --help
 python -m reviewer review --help
 python -m reviewer evaluate --help
+python -m reviewer preflight --help
 python -m unittest discover -s tests -v
 ```
 
-For the five-task benchmark generation command, frozen subset, observed upstream
-formats, and scoring limitation, see [Phase 5](docs/reviewbench-phase5.md).
+The five-task ReviewBench files document the development phase. Final sample
+selection, no-model frozen-input preflight, and scope-filtered ReviewBench scoring
+are documented in [the final evaluation runbook](docs/final-evaluation.md).
 
 The review command makes read-only GitHub requests and paid OpenAI requests when
 explicitly run. Phase 8 implementation and tests make no model calls. Review supports
@@ -42,18 +45,18 @@ generation/export and requires a pinned benchmark archive. See [Phase 6](docs/re
 for context selection, budgets, exclusions, and offline tests:
 
 ```sh
-python -m reviewer review --repo OWNER/REPO --pr 123 --mode baseline --input-token-limit 16000
-python -m reviewer review --repo OWNER/REPO --pr 123 --mode retrieval --input-token-limit 32000
-python -m reviewer review --repo OWNER/REPO --pr 123 --mode full --input-token-limit 32000
+python -m reviewer review --repo OWNER/REPO --pr 123 --mode baseline --request-byte-budget 16000
+python -m reviewer review --repo OWNER/REPO --pr 123 --mode retrieval --request-byte-budget 32000
+python -m reviewer review --repo OWNER/REPO --pr 123 --mode full --request-byte-budget 32000
 # Evaluation additionally requires --benchmark-archive PATH:
-python -m reviewer evaluate --benchmark reviewbench --modes baseline,retrieval --benchmark-archive PATH --input-token-limit 32000
+python -m reviewer evaluate --benchmark reviewbench --modes baseline,retrieval --benchmark-archive PATH --request-byte-budget 32000
 ```
 
 The baseline's only task-specific model input is the complete parsed PR diff. Its
 versioned instructions and output schema are fixed; repository files, PR title/body,
 static-analysis output, benchmark data, and verification results are not serialized
-into the request. The configured input budget is a conservative serialized-byte
-estimate rather than tokenizer-measured tokens. Oversized requests fail without
+into the request. The configured request byte estimator ceiling is compact serialized request-body
+UTF-8 bytes plus a 4,096-byte safety margin, not tokenizer-measured tokens. Oversized requests fail without
 truncating the diff. Use returned usage fields for later cost calculations; no
 historical pricing is embedded in result records.
 
@@ -62,9 +65,8 @@ model/provider selections, with explicit overrides taking precedence over enviro
 values. `.env` is never loaded automatically. The baseline CLI validates configuration
 and credentials before making GitHub requests. Help does not require a ready config.
 
-`validate_ready()` checks the selected mode's required models, input budget, and
-uncertain policy. The template intentionally remains unready: no model/provider,
-input token limit, or frozen split is assumed. Full mode requires explicit
+`validate_ready()` checks the selected mode's required models and request byte estimator ceiling.
+The template intentionally remains unready: no model/provider or frozen split is assumed. Full mode requires explicit
 `VERIFY_PROVIDER=openai` and `VERIFY_MODEL`; it reuses the configured review API
 settings and records them with verifier provenance.
 
@@ -145,8 +147,9 @@ Constrain archive extraction, symlinks, input sizes, and subprocess resources.
 ## Directory structure
 
 Schemas, configuration, diff parsing, frozen GitHub acquisition, the diff-only
-baseline, retrieval, Bandit tools mode, and five-task benchmark generation/export
-are implemented. Verification and semantic scoring remain deferred.
+baseline, retrieval, Bandit tools mode, verification, and final20 benchmark
+preflight/scoring adapters are implemented. The final paid evaluation and
+ReviewBench judging have not been run.
 
 ```text
 context-aware-code-review/
@@ -156,7 +159,8 @@ context-aware-code-review/
 ├── pyproject.toml
 ├── configs/
 │   ├── experiment.toml
-│   └── reviewbench-dev5.json
+│   ├── reviewbench-dev5.json
+│   └── reviewbench-final20.json
 ├── docs/
 │   └── reviewbench-phase5.md
 ├── reviewer/
@@ -507,7 +511,7 @@ and `findings` (`producer`, `file`, `start_line`, `end_line`, `message`). Usage 
 optional. Our eventual export adapter combines description/evidence into `message`
 and preserves head coordinates; it does not pretend our richer schema is native.
 
-## Evaluation direction (scoring paused; generation/export implemented)
+## Evaluation preparation
 
 Interrupted development runs can be continued with `evaluate --resume-from DIR
 --retry-failed`. Resume validates and copies prior successes into a new directory,
@@ -516,41 +520,38 @@ then makes at most one new attempt per pending task. An output increase such as
 reused results retain their original settings. See the [resume protocol and exact
 command](docs/reviewbench-phase5.md#resuming-an-interrupted-development-run).
 
-Phase 5 re-inspected the pinned and current matcher/scorer. The official matcher
-requires an LLM. Five frozen Python tasks can run through the existing baseline and
-export predictions accepted by the pinned ReviewBench input validator, but no
-matches or quality metrics are computed. See [the verified formats and proposed
-judging workflow](docs/reviewbench-phase5.md). We will use ReviewBench's judge and
-scorer rather than implement a parallel matcher or scoring system.
+Final selection is the pinned corpus-order Python subset with no more than 1000
+added+removed lines, excluding the five development tasks. The no-model preflight
+reconstructs all frozen diffs, prepares retrieval and Bandit, checks A-D payload
+budgets and label isolation, and writes a separate diff lock. It uses read-only
+GitHub access for uncached historical inputs but makes no model calls.
 
-The proposed contract-aligned view filters a copy of the golden reference to the
-reviewer's declared categories and introduced/exacerbated scope, preserving each
-original label, then uses the unchanged upstream judge/scorer. ReviewBench has
-category strata but no scope filter. Its unfiltered metrics can be reported
-separately for transparency. Because scope is not applied to unmatched-finding
-classifications, scoped augmented precision/F1 is not currently defensible. Judge
-execution and result-summary integration remain unimplemented pending review of
-this methodology and authorization for the paid judge calls.
+The primary scope-filtered adapter keeps only correctness/security/reliability/
+performance findings labeled introduced-by-pr or exacerbated-by-pr, preserving
+their original TP/FP labels. ReviewBench still performs semantic matching and
+unmatched-candidate classification. Because its pinned details omit scope, a
+hash-checked serialization-only patch records the existing scope judgments. The
+adapter reports both adapted augmented precision and grounded precision, fixed
+eligible-golden recall, their denominators, F1, and false positives per completed
+PR. See [the final evaluation runbook](docs/final-evaluation.md) for commands and
+limitations.
 
-Keep the established controls: frozen Python eligibility, repository-disjoint
-seeded development/test split, no tuning on test labels, shared inputs/settings
-across A–D, paired C/D proposals, saved raw outputs, and repeated runs. The already
-inspected AA-Factory example belongs in development. Keep zero-label PRs, distinguish
-failures from empty successful reviews, and log exclusions for every mode.
+Keep the final20 selection rule frozen before model execution, share reviewer
+settings across A–D, pair C/D proposals, save raw outputs, and distinguish failed
+or unattempted tasks from successful empty reviews. The predeclared sample has 20 tasks. One Nipoppy task is excluded before execution because its frozen benchmark inventory disagrees with the exact pinned reconstruction and its archive contains an unsupported symlink. No replacement was selected, leaving 19 evaluable tasks. This is a development-scale sample, not a statistically representative benchmark claim.
 
-The eventual integration must continue to account for these upstream behaviors:
+The final adapter accounts for these upstream behaviors:
 
 - Grounded precision excludes unmatched findings and is not overall precision.
 - Augmented precision judges unmatched findings; judge errors and cost must be visible.
 - Augmented recall has a reviewer-dependent denominator. Retain fixed-golden recall
   as a comparable coverage measure; do not silently present different metric families
   under one generic precision/recall/F1 label.
-- Existing matching uses same-file, many-to-many correspondences. Inspect duplicate
-  handling, bundled findings, line/path differences, and scope/category filters before
-  using the resulting counts. Record the exact scorer version and configuration.
-- Missing reference matches do not establish that a finding is false. Missing judge
-  output must not masquerade as a completed evaluation. Define empty-denominator,
-  failure, and nondeterminism handling explicitly before scoring.
+- Existing matching uses same-file, many-to-many correspondences. Raw ReviewBench
+  summary and per-finding details stay alongside adapted metrics.
+- Missing reference matches do not establish that a finding is false. The adapter
+  uses ReviewBench's unmatched labels, fails closed on missing scope details, reports
+  undefined denominators as null, and separates failed/unattempted tasks.
 
 Report actual metrics with clear definitions and denominators, original labels,
 judgments/matches, latency, model usage, approximate price-based costs, and completion
@@ -630,19 +631,21 @@ acquisition and the existing parser, with a versioned prompt, strict `FindingBat
 validation, head-line/file anchoring, and saved findings/usage/latency artifacts.
 Automated tests mock model and GitHub network behavior. Structural/lexical retrieval
 now shares that reviewer and the unchanged finding validator. Bandit and Mode D
-verification are implemented; semantic embeddings and benchmark scoring are not.
+verification are implemented; semantic embeddings are deferred. Final benchmark
+selection, no-model preflight, and scope-adapted scoring are ready, but no final
+generation or judge run has been performed.
 
 The approved roadmap is intentionally ordered:
 
 1. Frozen GitHub PR input (complete).
 2. Diff-only LLM baseline (complete; owner reports a successful live smoke test).
-3. Early ReviewBench integration: five-task generation and export complete; scoring
-   paused because upstream semantic matching requires an LLM. Live Phase 5
-   development is closed; the interrupted runs remain immutable historical data.
+3. Early ReviewBench integration: five-task generation and export complete; the
+   interrupted development runs remain immutable historical data.
 4. Repository retrieval (structural/lexical implemented; embeddings deferred).
 5. Static-analysis evidence.
 6. Finding verification (complete; no model calls performed during implementation).
-7. Final A–D evaluation and documented results.
+7. Final A–D generation, pinned ReviewBench judging, scoped aggregation, and
+   documented results (run only after explicit approval).
 
 Each step ends with a file-change report and owner review. All Git operations remain
 the owner's responsibility. Human adjudication and pooled references remain optional.

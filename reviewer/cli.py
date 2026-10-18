@@ -69,28 +69,43 @@ def main(argv: Sequence[str] | None = None) -> int:
     review.add_argument("--mode", choices=MODES, default="baseline")
     review.add_argument("--config", default="configs/experiment.toml")
     review.add_argument("--model", help="Override REVIEW_MODEL")
-    review.add_argument("--input-token-limit", type=int, help="Explicit conservative request budget")
+    review.add_argument("--request-byte-budget", "--input-token-limit", dest="request_byte_budget", type=int, help="Serialized request byte estimator ceiling (legacy alias: --input-token-limit)")
     review.add_argument("--max-output-tokens", type=int, help="Output ceiling, including reasoning; default from config")
-    review.add_argument("--context-token-budget", type=int, help="Conservative serialized context budget; retrieval only")
+    review.add_argument("--context-byte-budget", "--context-token-budget", dest="context_byte_budget", type=int, help="Serialized UTF-8 context byte cap (legacy alias: --context-token-budget)")
     review.add_argument("--temperature", type=float, help="Optional; only supported sampling models")
     review.add_argument("--results-dir", help="Override result directory")
-    evaluate = commands.add_parser("evaluate", help="Generate ReviewBench development reviews; scoring is paused")
+    evaluate = commands.add_parser("evaluate", help="Generate frozen ReviewBench reviews; scoring is external")
     evaluate.add_argument("--benchmark", choices=("reviewbench",), required=True)
     evaluate.add_argument("--modes", nargs="+", type=_mode_group, default=["baseline"], help="baseline,retrieval or space-separated modes")
     evaluate.add_argument("--config", default="configs/experiment.toml")
     evaluate.add_argument("--benchmark-archive", required=True, help="Pinned ReviewBench source tar.gz")
     evaluate.add_argument("--subset", default="configs/reviewbench-dev5.json")
     evaluate.add_argument("--model", help="Override REVIEW_MODEL")
-    evaluate.add_argument("--input-token-limit", type=int)
+    evaluate.add_argument("--request-byte-budget", "--input-token-limit", dest="request_byte_budget", type=int,
+                          help="Serialized request byte estimator ceiling (legacy alias: --input-token-limit)")
     evaluate.add_argument("--max-output-tokens", type=int, help="Output ceiling, including reasoning; default from config")
-    evaluate.add_argument("--context-token-budget", type=int)
+    evaluate.add_argument("--context-byte-budget", "--context-token-budget", dest="context_byte_budget", type=int,
+                          help="Serialized UTF-8 context byte cap (legacy alias: --context-token-budget)")
     evaluate.add_argument("--resume-from", help="Validate and reuse a prior run in a new output directory")
     evaluate.add_argument("--retry-failed", action="store_true", help="Explicitly authorize one new attempt on failed tasks")
     evaluate.add_argument("--allow-output-budget-change", action="store_true",
                           help="Allow an increased output ceiling on resume; preserve reused settings")
     evaluate.add_argument("--results-dir")
     evaluate.add_argument("--pricing", help="Optional explicit price provenance JSON; no built-in price table")
+    preflight = commands.add_parser("preflight", help="Reconstruct and validate a frozen ReviewBench subset without model calls")
+    preflight.add_argument("--benchmark", choices=("reviewbench",), required=True)
+    preflight.add_argument("--benchmark-archive", required=True)
+    preflight.add_argument("--subset", required=True)
+    preflight.add_argument("--config", default="configs/experiment.toml")
+    preflight.add_argument("--request-byte-budget", "--input-token-limit", dest="request_byte_budget", type=int,
+                           required=True, help="Serialized request byte estimator ceiling (legacy alias: --input-token-limit)")
+    preflight.add_argument("--max-output-tokens", type=int, required=True)
+    preflight.add_argument("--context-byte-budget", "--context-token-budget", dest="context_byte_budget", type=int,
+                           required=True, help="Serialized UTF-8 context byte cap (legacy alias: --context-token-budget)")
+    preflight.add_argument("--results-dir", default="results/preflight")
     args = parser.parse_args(argv)
+    if args.command == "preflight":
+        return _preflight_main(args, parser)
     if args.command == "evaluate":
         args.modes = [mode for group in args.modes for mode in group.split(',')]
         if any(mode not in MODES for mode in args.modes):
@@ -100,12 +115,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error("invalid review mode")
     try:
         config = load_config(args.config)
-        if args.input_token_limit is not None:
-            config.review.input_token_limit = args.input_token_limit
+        if args.request_byte_budget is not None:
+            config.review.request_byte_budget = args.request_byte_budget
         if args.max_output_tokens is not None:
             config.review.max_output_tokens = args.max_output_tokens
-        if args.context_token_budget is not None:
-            config.retrieval.context_token_budget = args.context_token_budget
+        if args.context_byte_budget is not None:
+            config.retrieval.context_byte_budget = args.context_byte_budget
         if args.temperature is not None:
             config.review.temperature = args.temperature
         if args.results_dir is not None:
@@ -128,7 +143,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (ValueError, OSError):
         # Do not print Pydantic input values or arbitrary config/environment content.
         print("Configuration error: check configuration, REVIEW_PROVIDER=openai, REVIEW_MODEL, "
-              "OPENAI_API_KEY, and a positive --input-token-limit. Temperature may be unsupported.", file=sys.stderr)
+              "OPENAI_API_KEY, and a positive --request-byte-budget. Temperature may be unsupported.", file=sys.stderr)
         return 2
     try:
         started = time.perf_counter()
@@ -140,7 +155,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         elif args.mode == 'retrieval':
             retrieval_started = time.perf_counter()
             context = prepare_context(acquired.review_input, provider, acquired.head_snapshot, config.retrieval,
-                                      cache_dir=config.cache_dir + '/retrieval')
+                                      cache_dir=config.cache_dir + '/retrieval',
+                                      reserve_static_signal_byte_cap=config.static_analysis.signal_byte_budget)
             run = run_review(acquired.review_input, provider, mode='retrieval', context=context,
                              retrieval_latency_seconds=time.perf_counter() - retrieval_started,
                              acquisition_latency_seconds=acquisition_latency,
@@ -148,7 +164,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         else:  # tools/full modes
             retrieval_started = time.perf_counter()
             context = prepare_context(acquired.review_input, provider, acquired.head_snapshot, config.retrieval,
-                                      cache_dir=config.cache_dir + '/retrieval')
+                                      cache_dir=config.cache_dir + '/retrieval',
+                                      reserve_static_signal_byte_cap=config.static_analysis.signal_byte_budget)
             retrieval_latency = time.perf_counter() - retrieval_started
             static_started = time.perf_counter()
             static_analysis = prepare_static_analysis(acquired.review_input, acquired.head_snapshot, context, config.static_analysis)
@@ -165,7 +182,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                                static_analysis_latency_seconds=static_latency,
                                retrieval_latency_seconds=retrieval_latency,
                                acquisition_latency_seconds=acquisition_latency,
-                               signal_budget=config.static_analysis.signal_token_budget,
+                               signal_budget=config.static_analysis.signal_byte_budget,
                                input_artifact_directory=str(acquired.artifact_directory))
         path = save_run(run, config.results_dir)
     except AcquisitionError as error:
@@ -191,19 +208,19 @@ def _benchmark_main(args, parser):
         failure_code = 'benchmark_pin_mismatch'
         if config.benchmark.revision != REVISION or config.benchmark.manifest_sha256 != MANIFEST_SHA256:
             raise ValueError('unsupported benchmark revision')
-        failure_code = 'invalid_input_budget'
-        if args.input_token_limit is not None:
-            config.review.input_token_limit = args.input_token_limit
-        if config.review.input_token_limit <= 0:
-            raise ValueError('positive input budget required')
+        failure_code = 'invalid_request_byte_budget'
+        if args.request_byte_budget is not None:
+            config.review.request_byte_budget = args.request_byte_budget
+        if config.review.request_byte_budget <= 0:
+            raise ValueError('positive request byte estimator ceiling required')
         failure_code = 'invalid_output_budget'
         if args.max_output_tokens is not None:
             config.review.max_output_tokens = args.max_output_tokens
-        if args.context_token_budget is not None:
-            config.retrieval.context_token_budget = args.context_token_budget
+        if args.context_byte_budget is not None:
+            config.retrieval.context_byte_budget = args.context_byte_budget
         failure_code = 'invalid_attempt_limit'
         if config.review.max_attempts != 1:
-            raise ValueError('five-task development run requires one attempt per task')
+            raise ValueError('evaluation requires one model attempt per observation')
         failure_code = 'invalid_model_configuration'
         models = resolve_models(config, overrides={'review_model': args.model} if args.model else {})
         for mode in args.modes:
@@ -253,9 +270,55 @@ def _benchmark_main(args, parser):
             failure_code = 'incompatible_resume: check saved identities/settings and explicit resume flags'
         print(f'Benchmark configuration failed: {failure_code}. No successful benchmark reported.', file=sys.stderr)
         return 2
-    requested_total = 5 * len(args.modes)
+    requested_total = len(benchmark.subset.tasks) * len(args.modes)
     print(f"ReviewBench: {report['status']}; {report['completed_reviews']}/{requested_total} requested reviews completed")
     print(f"Reused: {report.get('reused_reviews', 0)}; new model attempts: {report['model_attempts']}")
     print('Scoring paused: no matching or precision/recall/F1 computed.')
     print(f'Saved: {path}')
     return 0 if report['status'] == 'generation_complete_scoring_paused' else 1
+
+
+def _preflight_main(args, parser):
+    """No-model path: config/payload construction plus read-only frozen acquisition."""
+    from reviewer.config import resolve_models
+    from reviewer.preflight import PreflightFailure, _safe_error, run_preflight
+    try:
+        config = load_config(args.config)
+        config.review.request_byte_budget = args.request_byte_budget
+        config.review.max_output_tokens = args.max_output_tokens
+        config.retrieval.context_byte_budget = args.context_byte_budget
+        models = resolve_models(config)
+        if models.review is None:
+            raise ValueError('review model is not configured')
+        if models.review.provider != 'openai':
+            raise ValueError('only OpenAI-compatible payload configuration is supported')
+        path, report = run_preflight(
+            archive=args.benchmark_archive, subset_path=args.subset, config=config,
+            client=GitHubClient(), results_dir=args.results_dir,
+            review_model=models.review.model, review_provider=models.review.provider,
+            verify_model=models.verify.model if models.verify else None,
+            verify_provider=models.verify.provider if models.verify else None,
+            cache_dir=config.cache_dir)
+    except PreflightFailure as error:
+        task = error.task_id or 'none (pre-task validation)'
+        print(f'Preflight failed\nTask: {task}\nStage: {error.stage}\n'
+              f'Error: {error.code}: {error.message}', file=sys.stderr)
+        if error.report_path is not None:
+            print(f'Report: {error.report_path}', file=sys.stderr)
+        print('Model calls: 0', file=sys.stderr)
+        return 1
+    except (ValueError, OSError, KeyError, TypeError, AcquisitionError) as error:
+        code, message = _safe_error(error)
+        print(f'Preflight failed\nTask: none (pre-task validation)\n'
+              f'Stage: configuration\nError: {code}: {message}\nModel calls: 0', file=sys.stderr)
+        return 1
+    if 'intended_task_count' in report:
+        print(f"Preflight: ready; intended={report['intended_task_count']}, "
+              f"evaluable={report['evaluable_task_count']}, "
+              f"excluded={report['excluded_pre_execution_count']}; model calls: 0")
+    else:
+        print(f"Preflight: ready; {len(report['tasks'])} tasks; model calls: 0")
+    print(f"Benchmark archive SHA-256: {report['benchmark_archive_sha256']}")
+    print(f"Subset SHA-256: {report['subset_sha256']}")
+    print(f"Saved: {path}")
+    return 0

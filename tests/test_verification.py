@@ -42,7 +42,7 @@ def verify_response(verdict='SUPPORTED', rationale='The changed line demonstrate
 class VerificationTests(unittest.TestCase):
     def setUp(self):
         self.config = load_config(Path(__file__).resolve().parents[1] / 'configs/experiment.toml')
-        self.config.review.input_token_limit = 32000
+        self.config.review.request_byte_budget = 32000
         self.inp = ReviewInput(pr=pr_data(), diff=DIFF.decode(), diff_complete=True,
                                diff_base='c' * 40)
         self.archive_hash = 'd' * 64
@@ -50,7 +50,7 @@ class VerificationTests(unittest.TestCase):
             head=self.inp.pr.head, diff_sha256=sha256(self.inp.diff.encode()),
             archive_sha256=self.archive_hash, repository='owner/repo',
             ranking='structural_lexical_v1', config={},
-            budget_unit='serialized_utf8_bytes_conservative_token_estimate',
+            budget_unit='serialized_utf8_bytes',
             budget=100, used_budget=5,
             chunks=[ContextChunk(file='src/helpers.py', start_line=1, end_line=1,
                                  content='def helper(): pass', content_sha256='e' * 64,
@@ -125,6 +125,11 @@ class VerificationTests(unittest.TestCase):
             self.assertNotIn(forbidden, json.dumps(payload))
         self.assertEqual(record.request_sha256, sha256(json.dumps([sha256(json.dumps(payload, sort_keys=True,
             ensure_ascii=False, allow_nan=False).encode())], separators=(',', ':')).encode()))
+        measurement = record.request_byte_measurements[0]
+        self.assertEqual(measurement.configured_estimator_ceiling, verifier.config.request_byte_budget)
+        self.assertTrue(measurement.fits)
+        self.assertEqual(measurement.estimator_value,
+                         measurement.serialized_request_body_utf8_bytes + 4096)
 
     def test_stable_proposal_identifiers(self):
         self.assertEqual(proposal_identifier(0, proposal()), proposal_identifier(0, proposal()))

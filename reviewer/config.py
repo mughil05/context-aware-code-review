@@ -45,11 +45,11 @@ class ReviewConfig(StrictModel):
     timeout_seconds: Annotated[float, Field(gt=0, allow_inf_nan=False)] = 60.0
     max_output_tokens: PositiveInt
     max_attempts: PositiveInt
-    input_token_limit: Annotated[int, Field(ge=0)]
+    request_byte_budget: Annotated[int, Field(ge=0)]
 
 
 class RetrievalConfig(StrictModel):
-    context_token_budget: PositiveInt
+    context_byte_budget: PositiveInt
     max_chunks: PositiveInt
     chunk_target_lines: PositiveInt
     ranking: Literal["structural_lexical_v1"]
@@ -58,7 +58,7 @@ class RetrievalConfig(StrictModel):
 class StaticConfig(StrictModel):
     tool: Literal["bandit"]
     timeout_seconds: PositiveInt
-    signal_token_budget: PositiveInt
+    signal_byte_budget: PositiveInt
 
 
 class VerificationConfig(StrictModel):
@@ -185,13 +185,13 @@ def validate_ready(config: ExperimentConfig, models: ResolvedModels, mode: Mode,
     # Current retrieval is structural/lexical and needs no embedding provider.
     if config.modes[mode].verification:
         required.append("verify")
-    if config.review.input_token_limit == 0:
-        raise ValueError("set the model-specific input token limit before running")
-    optional_tokens = (config.retrieval.context_token_budget if config.modes[mode].retrieval else 0)
+    if config.review.request_byte_budget == 0:
+        raise ValueError("set a positive serialized-request byte estimator ceiling before running")
+    optional_bytes = (config.retrieval.context_byte_budget if config.modes[mode].retrieval else 0)
     if config.modes[mode].static_analysis:
-        optional_tokens += config.static_analysis.signal_token_budget
-    if optional_tokens >= config.review.input_token_limit:
-        raise ValueError("input token limit must leave room for the diff and review instructions")
+        optional_bytes += config.static_analysis.signal_byte_budget
+    if optional_bytes >= config.review.request_byte_budget:
+        raise ValueError("request byte estimator ceiling must leave room for fixed prompt and diff")
     if any(getattr(models, role) is None for role in required):
         raise ValueError("missing required model/provider selection: " + ", ".join(required))
     if final_experiment:

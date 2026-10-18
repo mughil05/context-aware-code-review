@@ -57,7 +57,7 @@ class RetrievalTests(unittest.TestCase):
         self.root = Path(self.tmp.name).resolve()
         self.inp = ReviewInput(pr=pr_data(), diff=DIFF, diff_complete=True)
         self.config = load_config(ROOT / 'configs/experiment.toml')
-        self.config.review.input_token_limit = 32000
+        self.config.review.request_byte_budget = 32000
         self.snap = snapshot(self.root, FILES, self.inp.pr.head)
         guard = patch('socket.socket', side_effect=AssertionError('offline only'))
         guard.start(); self.addCleanup(guard.stop)
@@ -100,7 +100,7 @@ class RetrievalTests(unittest.TestCase):
                          [(c.file, c.start_line) for c in sorted(first.chunks, key=lambda c: (-c.score, c.file, c.start_line, c.end_line, c.content_sha256))])
 
     def test_budget_max_chunks_and_selection_metadata(self):
-        self.config.retrieval.context_token_budget = 300
+        self.config.retrieval.context_byte_budget = 300
         self.config.retrieval.max_chunks = 1
         result = self.get()
         self.assertLessEqual(result.used_budget, 300)
@@ -112,7 +112,7 @@ class RetrievalTests(unittest.TestCase):
                 self.assertEqual(c.content_sha256, digest(c.content.encode()))
             else:
                 self.assertEqual(c.content, '')
-        zero = self.get(available_budget=0)
+        zero = self.get(available_byte_budget=0)
         self.assertEqual(zero.payload(), [])
         self.assertEqual(zero.used_budget, 0)
 
@@ -120,12 +120,12 @@ class RetrievalTests(unittest.TestCase):
         provider = self.provider()
         base = provider.payload(self.inp.diff, review_prompt())
         base_size = len(json.dumps(base, ensure_ascii=False).encode()) + 4096
-        provider.config.input_token_limit = base_size + 200
+        provider.config.request_byte_budget = base_size + 200
         context = prepare_context(self.inp, provider, self.snap, self.config.retrieval)
         self.assertLessEqual(context.used_budget, 136)
         full = provider.payload(self.inp.diff, review_prompt(), context=context.payload())
         self.assertLessEqual(len(json.dumps(full, ensure_ascii=False).encode()) + 4096,
-                             provider.config.input_token_limit)
+                             provider.config.request_byte_budget)
         self.assertEqual(json.loads(full['input'][0]['content'])['diff'], self.inp.diff)
         provider._transport.assert_not_called()
 

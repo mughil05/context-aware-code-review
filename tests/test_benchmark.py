@@ -94,7 +94,7 @@ class BenchmarkTests(unittest.TestCase):
 
     def provider(self, responses=None):
         config = load_config(ROOT / 'configs/experiment.toml').review
-        config.input_token_limit = 32000
+        config.request_byte_budget = 32000
         transport = Mock(return_value=response([finding()]))
         if responses is not None:
             transport.side_effect = responses
@@ -284,9 +284,9 @@ class BenchmarkTests(unittest.TestCase):
 
     def test_budget_and_retry_policy_fail_before_model_spend(self):
         provider = self.provider()
-        provider.config.input_token_limit = 1
+        provider.config.request_byte_budget = 1
         _, report = run_development_subset(self.benchmark, provider, self.client()[0], self.root / 'results')
-        self.assertEqual(report['error_code'], 'input_budget')
+        self.assertEqual(report['error_code'], 'request_byte_budget_exceeded')
         provider._transport.assert_not_called()
         provider.config.max_attempts = 2
         with self.assertRaisesRegex(ValueError, 'max_attempts'):

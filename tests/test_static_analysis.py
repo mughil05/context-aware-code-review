@@ -34,12 +34,36 @@ class BanditAdapterTests(TestCase):
         self.assertEqual(result.findings, [])
         self.assertIn('not found', result.error)
 
-    def test_empty_selection_is_not_misreported_as_clean_scan(self):
-        with patch('reviewer.static_analysis.get_bandit_version') as version:
+    def test_empty_selection_records_discovered_version_without_analysis(self):
+        for discovered in ('1.7.8', '1.7.5'):
+            with self.subTest(version=discovered), patch(
+                    'reviewer.static_analysis.subprocess.run',
+                    return_value=Mock(returncode=0, stdout=f'bandit {discovered}\n')) as run:
+                result = run_bandit(self.root, [], timeout_seconds=60,
+                                    head='a' * 40, archive_sha256='b' * 64)
+            self.assertEqual(result.status, 'no_files')
+            self.assertEqual(result.version, discovered)
+            self.assertEqual(result.config['selected_files'], [])
+            self.assertEqual(result.analyzed_files, [])
+            self.assertEqual(result.findings, [])
+            self.assertEqual(result.signals_sent, [])
+            self.assertIsNone(result.error)
+            run.assert_called_once_with(['bandit', '--version'], capture_output=True,
+                                        text=True, timeout=5, check=False)
+
+    def test_empty_selection_with_unavailable_bandit_fails_explicitly(self):
+        with patch('reviewer.static_analysis.subprocess.run',
+                   side_effect=FileNotFoundError) as run:
             result = run_bandit(self.root, [], timeout_seconds=60,
                                 head='a' * 40, archive_sha256='b' * 64)
-        self.assertEqual(result.status, 'no_files')
-        version.assert_not_called()
+        self.assertEqual(result.status, 'tool_unavailable')
+        self.assertIsNone(result.version)
+        self.assertEqual(result.analyzed_files, [])
+        self.assertEqual(result.findings, [])
+        self.assertEqual(result.signals_sent, [])
+        self.assertIn('not found', result.error)
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(run.call_args.args[0], ['bandit', '--version'])
 
     def test_zero_findings_returns_no_findings_status(self):
         """When Bandit runs but finds nothing, return no_findings status."""
@@ -224,7 +248,7 @@ class StaticAnalysisIntegrationTests(TestCase):
                 head=self.inp.pr.head,
                 archive_sha256=self.snap.archive_sha256,
                 analyzed_files=[],
-                config={'signal_token_budget': 2000},
+                config={'signal_byte_budget': 2000},
                 timeout_seconds=60,
                 status='no_findings',
                 error=None,
@@ -260,7 +284,7 @@ class StaticAnalysisIntegrationTests(TestCase):
         with patch('reviewer.static_analysis.run_bandit') as mock_bandit:
             mock_bandit.return_value = StaticAnalysisResult(
                 tool='bandit', version='1.7.5', head=self.inp.pr.head,
-                archive_sha256=snap.archive_sha256, analyzed_files=[], config={'signal_token_budget': 2000},
+                archive_sha256=snap.archive_sha256, analyzed_files=[], config={'signal_byte_budget': 2000},
                 timeout_seconds=60, status='no_findings', error=None, findings=[], metrics=None
             )
 
@@ -288,7 +312,7 @@ class StaticAnalysisIntegrationTests(TestCase):
             return StaticAnalysisResult(
                 tool='bandit', version='1.7.5', head=self.inp.pr.head,
                 archive_sha256=self.snap.archive_sha256, analyzed_files=selected,
-                config={'signal_token_budget': 2000}, timeout_seconds=60,
+                config={'signal_byte_budget': 2000}, timeout_seconds=60,
                 status='no_findings', error=None, findings=[], metrics=None)
 
         with patch('reviewer.static_analysis.run_bandit', side_effect=inspect_staging):
@@ -309,7 +333,7 @@ class StaticAnalysisIntegrationTests(TestCase):
             head=self.inp.pr.head,
             archive_sha256=self.snap.archive_sha256,
             analyzed_files=['src/pkg/users.py'],
-            config={'signal_token_budget': 2000},
+            config={'signal_byte_budget': 2000},
             timeout_seconds=60,
             status='success',
             error=None,
@@ -381,7 +405,7 @@ class ToolsModeTests(TestCase):
         static = StaticAnalysisResult(
             tool='bandit', version='1.7.5', head=self.inp.pr.head,
             archive_sha256=self.snap.archive_sha256, analyzed_files=['src/pkg/users.py'],
-            config={'signal_token_budget': 2000}, timeout_seconds=60, status='no_findings',
+            config={'signal_byte_budget': 2000}, timeout_seconds=60, status='no_findings',
             error=None, findings=[BanditFinding(
                 test_id='B105', test_name='hardcoded_password', issue_severity='HIGH',
                 issue_confidence='HIGH', issue_text='Possible hardcoded password',
@@ -421,7 +445,7 @@ class ToolsModeTests(TestCase):
         static = StaticAnalysisResult(
             tool='bandit', version='1.7.5', head=self.inp.pr.head,
             archive_sha256=self.snap.archive_sha256, analyzed_files=['src/pkg/main.py'],
-            config={'format': 'json', 'signal_token_budget': 2000}, timeout_seconds=60, status='no_findings',
+            config={'format': 'json', 'signal_byte_budget': 2000}, timeout_seconds=60, status='no_findings',
             error=None, findings=[], metrics={'_totals': {'loc': 50}}
         )
 

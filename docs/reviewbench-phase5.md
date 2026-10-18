@@ -114,7 +114,7 @@ never reads current PR metadata, current branches, PR comments, or later fixes.
 There is no automatic repository fallback. Coordinates use the merge base on the
 old side and frozen head on the new side, as in the existing acquisition path.
 
-All five tasks reconstruct and pass the input budget check before the first model
+All five tasks reconstruct and pass the request byte estimator check before the first model
 call. `run_baseline` receives only the validated `ReviewInput`, the existing model
 adapter, timing, and an artifact path. The model receives only the diff, stable
 instructions, and schema. Labels, scope metadata, titles/bodies, and task IDs are
@@ -140,7 +140,7 @@ REVIEW_PROVIDER=openai REVIEW_MODEL=gpt-6-luna \
   --benchmark reviewbench --modes baseline \
   --benchmark-archive .cache/reviewbench/ReviewBench-968291d99e82b3e2969d7e0b4acca62585886c13.tar.gz \
   --subset configs/reviewbench-dev5.json \
-  --input-token-limit 32000
+  --request-byte-budget 32000
 ```
 
 On other machines use a Python 3.11+ environment with Pydantic 2. There are no new
@@ -196,7 +196,7 @@ parent's saved state and can repeat its pending work.
 
 The output ceiling can be set using `--max-output-tokens N` on `review` or
 `evaluate`, or `[review].max_output_tokens` in TOML. The default remains 4096.
-It covers reasoning plus visible output; `--input-token-limit` remains the separate,
+It covers reasoning plus visible output; `--request-byte-budget` remains the separate,
 unchanged conservative input-size check. Output-ceiling increases during resume
 require `--allow-output-budget-change`. This permits only that increase, not other
 configuration changes, and applies the new ceiling only to new attempts. A reused
@@ -212,7 +212,7 @@ REVIEW_PROVIDER=openai REVIEW_MODEL=gpt-6-luna \
   --benchmark reviewbench --modes baseline \
   --benchmark-archive .cache/reviewbench/ReviewBench-968291d99e82b3e2969d7e0b4acca62585886c13.tar.gz \
   --subset configs/reviewbench-dev5.json \
-  --input-token-limit 32000 --max-output-tokens 8192 \
+  --request-byte-budget 32000 --max-output-tokens 8192 \
   --resume-from results/reviewbench-dev5-406513990eeb4bc391b587073b04e00e \
   --retry-failed --allow-output-budget-change
 ```

@@ -9,6 +9,7 @@ from reviewer.archives import sha256
 from reviewer.diff import DiffParseError, parse_diff
 from reviewer.models import ModelError, OpenAIReviewer
 from reviewer.schemas import BaselineRun, FindingBatch, ReviewInput, ReviewResult, RepositoryContext
+from reviewer.request_budget import measure_request, BUDGET_METHOD
 
 
 def review_prompt() -> str:
@@ -37,8 +38,8 @@ def review_settings(reviewer: OpenAIReviewer) -> dict:
     return {"api": "responses", "max_output_tokens": reviewer.config.max_output_tokens,
                 "temperature": reviewer.config.temperature, "temperature_sent": reviewer.config.temperature is not None,
                 "max_attempts": reviewer.config.max_attempts, "timeout_seconds": reviewer.config.timeout_seconds,
-                "input_token_limit": reviewer.config.input_token_limit,
-                "input_budget_policy": "serialized_request_utf8_bytes_plus_4096_estimate",
+                "request_byte_budget": reviewer.config.request_byte_budget,
+                "request_budget_method": BUDGET_METHOD,
                 "truncation": "disabled", "store": False, "structured_output": "json_schema_strict",
                 "seed_sent": False, "anchor_policy": "represented_head_lines_in_changed_hunks"}
 
@@ -52,13 +53,21 @@ def run_baseline(review_input: ReviewInput, reviewer: OpenAIReviewer, *,
                       input_artifact_directory=input_artifact_directory, clock=clock)
 
 
-def prepare_context(review_input, reviewer, snapshot, config, *, cache_dir=None):
+def prepare_context(review_input, reviewer, snapshot, config, *, cache_dir=None,
+                    reserve_static_signal_byte_cap=0):
     from reviewer.retrieval import retrieve
     baseline_payload = reviewer.payload(review_input.diff, review_prompt())
-    baseline_size = len(json.dumps(baseline_payload, ensure_ascii=False).encode()) + 4096
-    # Leave room for the additional JSON field; never displace or truncate diff.
-    available = reviewer.config.input_token_limit - baseline_size - 64
-    context = retrieve(review_input, snapshot, config, cache_dir=cache_dir, available_budget=available)
+    baseline_size = measure_request(baseline_payload)["estimator_value"]
+    # B/C/D always share one context. Reserve worst-case two-layer JSON escaping
+    # of the configured signal cap, plus fixed envelope overhead, for C/D.
+    signal_reservation_estimator_bytes = reserve_static_signal_byte_cap * 4 + (256 if reserve_static_signal_byte_cap else 0)
+    available = reviewer.config.request_byte_budget - baseline_size - signal_reservation_estimator_bytes - 64
+    context = retrieve(review_input, snapshot, config, cache_dir=cache_dir, available_byte_budget=available)
+    context = context.model_copy(update={
+        'overall_request_byte_ceiling': reviewer.config.request_byte_budget,
+        'reserved_static_signal_byte_cap': reserve_static_signal_byte_cap,
+        'reserved_static_signal_estimator_bytes': signal_reservation_estimator_bytes,
+    })
     reviewer.payload(review_input.diff, review_prompt(), context=context.payload())
     return context
 
@@ -71,7 +80,7 @@ def prepare_static_analysis(review_input, snapshot, context, static_config):
         snapshot,
         context,
         timeout_seconds=static_config.timeout_seconds,
-        budget=static_config.signal_token_budget
+        budget=static_config.signal_byte_budget
     )
 
 
@@ -106,12 +115,13 @@ def run_review(review_input: ReviewInput, reviewer: OpenAIReviewer, *, mode='bas
     model_latency = 0.0
     output_text = None
     request_hash = None
+    request_measurement = None
     findings = []
     error = None
     try:
         parsed = parse_diff(review_input.diff)
         if static_analysis is not None and mode == 'tools':
-            signal_budget = static_analysis.config.get('signal_token_budget', 0)
+            signal_budget = static_analysis.config.get('signal_byte_budget', 0)
             if type(signal_budget) is not int or signal_budget < 0:
                 raise ValueError('static analysis signal budget is invalid')
             static_signals = static_analysis.payload(signal_budget)
@@ -125,6 +135,7 @@ def run_review(review_input: ReviewInput, reviewer: OpenAIReviewer, *, mode='bas
         else:
             payload = reviewer.payload(review_input.diff, prompt)
         request_hash = sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False, allow_nan=False).encode("utf-8"))
+        request_measurement = measure_request(payload, reviewer.config.request_byte_budget)
         reply = reviewer.complete(payload)
         attempts = list(reply.attempts)
         model_latency = reply.latency_seconds
@@ -148,7 +159,8 @@ def run_review(review_input: ReviewInput, reviewer: OpenAIReviewer, *, mode='bas
                        diff_sha256=sha256(review_input.diff.encode("utf-8")),
                        requested_model=reviewer.model, settings=settings,
                        prompt_sha256=sha256(prompt.encode("utf-8")), prompt_text=prompt, output_schema=schema,
-                       request_sha256=request_hash, created_at=datetime.now(timezone.utc).isoformat(),
+                       request_sha256=request_hash, request_byte_measurement=request_measurement,
+                       created_at=datetime.now(timezone.utc).isoformat(),
                        attempts=attempts, model_latency_seconds=model_latency,
                        acquisition_latency_seconds=acquisition_latency_seconds,
                        total_latency_seconds=acquisition_latency_seconds + retrieval_latency_seconds + static_analysis_latency_seconds + max(0.0, clock() - started),

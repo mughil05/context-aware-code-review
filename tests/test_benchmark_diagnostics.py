@@ -63,7 +63,7 @@ class BenchmarkDiagnosticTests(unittest.TestCase):
         for budget in ('0', '-1'):
             args = self.args.copy()
             args[-1] = budget
-            self.invoke('invalid_input_budget', args=args)
+            self.invoke('invalid_request_byte_budget', args=args)
         self.invoke('invalid_model_configuration', extra_env={'REVIEW_PROVIDER': 'SECRET_SENTINEL'})
 
     def test_missing_key_and_bad_pricing_are_specific(self):

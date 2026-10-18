@@ -30,11 +30,13 @@ judge_model_env = "JUDGE_MODEL"
 timeout_seconds = 60.0
 max_output_tokens = 4096
 max_attempts = 1
-# Model-specific input limits must be set before running; never truncate silently.
-input_token_limit = 0
+# Application ceiling: serialized request JSON UTF-8 bytes + 4,096-byte safety margin.
+# This is not tokenizer-measured usage. Never truncate the PR diff.
+request_byte_budget = 73728
 
 [retrieval]
-context_token_budget = 6000
+# Serialized UTF-8 byte estimator cap, not tokens. Shared by retrieval/tools/full.
+context_byte_budget = 6000
 max_chunks = 20
 chunk_target_lines = 80
 ranking = "structural_lexical_v1"
@@ -42,7 +44,8 @@ ranking = "structural_lexical_v1"
 [static_analysis]
 tool = "bandit"
 timeout_seconds = 60
-signal_token_budget = 2000
+# Serialized JSON UTF-8 byte cap, not tokens.
+signal_byte_budget = 2000
 
 [verification]
 # Conservative Mode D policy: uncertain proposals are excluded from candidates.

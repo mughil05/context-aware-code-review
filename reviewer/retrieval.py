@@ -168,7 +168,7 @@ def context_cost(items):
                           ensure_ascii=False).encode('utf-8')) if items else 0
 
 
-def retrieve(review_input, snapshot, config: RetrievalConfig, *, cache_dir=None, available_budget=None):
+def retrieve(review_input, snapshot, config: RetrievalConfig, *, cache_dir=None, available_byte_budget=None):
     config = RetrievalConfig.model_validate(config.model_dump())
     sources = snapshot_sources(snapshot, review_input.pr.head)
     parsed = parse_diff(review_input.diff)
@@ -227,7 +227,7 @@ def retrieve(review_input, snapshot, config: RetrievalConfig, *, cache_dir=None,
                     content_sha256=digest(content.encode()), score=score, reasons=reasons,
                     selected=False, selection_reason='no_signal'))
     candidates.sort(key=lambda c: (-c.score, c.file, c.start_line, c.end_line, c.content_sha256))
-    budget = min(config.context_token_budget, max(0, available_budget)) if available_budget is not None else config.context_token_budget
+    budget = min(config.context_byte_budget, max(0, available_byte_budget)) if available_byte_budget is not None else config.context_byte_budget
     selected = []
     for chunk in candidates:
         item = {k: getattr(chunk, k) for k in ('file', 'start_line', 'end_line', 'content')}
@@ -246,5 +246,5 @@ def retrieve(review_input, snapshot, config: RetrievalConfig, *, cache_dir=None,
             chunk.content = ''
     return RepositoryContext(head=review_input.pr.head, diff_sha256=digest(review_input.diff.encode()),
         archive_sha256=snapshot.archive_sha256, repository=snapshot.repository, ranking=VERSION,
-        config=config.model_dump(), budget_unit='serialized_utf8_bytes_conservative_token_estimate',
+        config=config.model_dump(), budget_unit='serialized_utf8_bytes',
         budget=budget, used_budget=context_cost(selected), chunks=candidates)

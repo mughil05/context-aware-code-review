@@ -1,4 +1,4 @@
-"""Five-task baseline generation and export. Scoring is paused by user decision.
+"""Frozen ReviewBench baseline generation and export. Scoring is external.
 
 No matcher, judge, or quality metric computation is implemented here.
 """
@@ -16,6 +16,12 @@ from reviewer.pipeline import (review_prompt, review_settings, run_baseline, run
                                run_full, prepare_context, prepare_static_analysis)
 from reviewer.schemas import StrictModel, Text
 from reviewer.storage import save_run
+from reviewer.verification import PROMPT_VERSION as VERIFIER_PROMPT_VERSION, verification_prompt
+from reviewer.final_exclusions import (TASK_ID as FINAL_EXCLUDED_TASK_ID,
+                                       exclusion_record, is_final20, REQUEST_BUDGET,
+                                       CONTEXT_BYTE_BUDGET, STATIC_SIGNAL_BYTE_BUDGET,
+                                       MAX_OUTPUT_TOKENS)
+from reviewer.request_budget import measure_request, BUDGET_METHOD, SAFETY_MARGIN_BYTES
 
 
 class Pricing(StrictModel):
@@ -82,12 +88,12 @@ def run_development_subset(benchmark, reviewer, client, results_dir, *, pricing=
                            resume_from=None, retry_failed=False, allow_output_budget_change=False,
                            modes=None, retrieval_config=None, static_config=None, cache_dir='.cache',
                            verifier=None, verify_model=None):
-    """Preflight all five frozen inputs before spending on any review.
+    """Preflight all frozen inputs before spending on any review.
 
     Fail fast on the first model failure, retaining completed and failed raw runs.
     Resume forks a new directory, preserving validated successes byte-for-byte.
-    No automatic retries; max_attempts must be one. The three repetitions in
-    the future experiment config do not apply to this development smoke run.
+    No automatic retries; max_attempts must be one. Repeated runs are not
+    implemented: this executes one attempt per task/mode.
     """
     modes = ['baseline'] if modes is None else modes
     if not modes or len(set(modes)) != len(modes) or any(m not in ('baseline', 'retrieval', 'tools', 'full') for m in modes):
@@ -103,6 +109,9 @@ def run_development_subset(benchmark, reviewer, client, results_dir, *, pricing=
         else:
             from reviewer.config import StaticConfig
             static_config = StaticConfig.model_validate(static_config.model_dump())
+    elif 'retrieval' in modes and static_config is None:
+        from reviewer.config import load_config
+        static_config = load_config('configs/experiment.toml').static_analysis
     if reviewer.config.max_attempts != 1:
         raise ValueError('development subset requires max_attempts=1')
     if pricing is not None and pricing.model != reviewer.model:
@@ -118,21 +127,55 @@ def run_development_subset(benchmark, reviewer, client, results_dir, *, pricing=
     if any(p.is_symlink() for p in (parent, *parent.parents)):
         raise ValueError('results directory cannot contain symlink ancestors')
     parent.mkdir(parents=True, exist_ok=True)
-    root = parent / ('reviewbench-dev5-' + uuid.uuid4().hex)
+    root = parent / ('reviewbench-' + uuid.uuid4().hex)
     root.mkdir()
     for name in ('inputs', 'candidates', 'reference', 'runs'):
         (root / name).mkdir()
+    exclusions = []
+    final20 = is_final20(benchmark.subset.tasks, benchmark.subset.purpose)
+    if final20:
+        selected = [task for task in benchmark.subset.tasks if task.task_id == FINAL_EXCLUDED_TASK_ID]
+        if len(selected) != 1:
+            raise ValueError('final evaluation must contain the declared Nipoppy pre-execution exclusion')
+        if reviewer.config.request_byte_budget != REQUEST_BUDGET or reviewer.config.max_output_tokens != MAX_OUTPUT_TOKENS:
+            raise ValueError('final evaluation reviewer byte/output settings differ from the frozen plan')
+        if retrieval_config is not None and retrieval_config.context_byte_budget != CONTEXT_BYTE_BUDGET:
+            raise ValueError('final evaluation retrieval byte cap differs from the frozen plan')
+        if static_config is not None and static_config.signal_byte_budget != STATIC_SIGNAL_BYTE_BUDGET:
+            raise ValueError('final evaluation static signal byte cap differs from the frozen plan')
+        exclusions = [exclusion_record(selected[0])]
+    evaluable_tasks = [task for task in benchmark.subset.tasks
+                       if not final20 or task.task_id != FINAL_EXCLUDED_TASK_ID]
     report = {'schema_version': 1, 'benchmark': 'reviewbench',
               'benchmark_revision': benchmark.subset.benchmark_revision,
               'manifest_sha256': benchmark.subset.manifest_sha256,
+              'benchmark_archive_sha256': benchmark.archive_sha256,
+              'diff_lock_sha256': benchmark.diff_lock_sha256,
               'subset_sha256': benchmark.subset_sha256, 'mode': ','.join(modes), 'modes': modes,
               'requested_model': reviewer.model, 'created_at': datetime.now(timezone.utc).isoformat(),
+              'request_budget': {'ceiling': reviewer.config.request_byte_budget,
+                                 'safety_margin_bytes': SAFETY_MARGIN_BYTES,
+                                 'method': BUDGET_METHOD},
+              'context_byte_budget': retrieval_config.context_byte_budget if retrieval_config else None,
+              'static_signal_byte_budget': static_config.signal_byte_budget if static_config else None,
               'status': 'preflight', 'scoring_status': 'paused', 'quality_metrics': None,
               'pricing': pricing.model_dump() if pricing else None,
               'tasks': [], 'completed_reviews': 0, 'model_attempts': 0, 'reused_reviews': 0,
+              'intended_task_count': len(benchmark.subset.tasks),
+              'evaluable_task_count': len(evaluable_tasks),
+              'completed_task_count': 0, 'failed_task_count': 0,
+              'excluded_pre_execution_count': len(exclusions),
+              'excluded_tasks': exclusions,
               'review_settings': review_settings(reviewer),
               'verifier_model': verifier.model if verifier else None,
+              'verifier_provider': 'openai' if verifier else None,
               'prompt_sha256': digest(review_prompt().encode()),
+              'review_prompt_version': 'v3',
+              'verifier_prompt_sha256': digest(verification_prompt().encode()) if verifier else None,
+              'verifier_prompt_version': VERIFIER_PROMPT_VERSION if verifier else None,
+              'verifier_settings': review_settings(verifier) if verifier else None,
+              'retrieval_config': retrieval_config.model_dump() if retrieval_config is not None else None,
+              'static_analysis_config': static_config.model_dump() if static_config is not None else None,
               'resume_from': str(plan.source) if plan else None,
               'resume_summary_sha256': plan.summary_sha256 if plan else None,
               'output_budget_change_allowed': allow_output_budget_change}
@@ -144,7 +187,7 @@ def run_development_subset(benchmark, reviewer, client, results_dir, *, pricing=
             execution_modes.append('tools')
         execution_modes.append('full')
     try:
-        for task in benchmark.subset.tasks:
+        for task in evaluable_tasks:
             record = {'task_id': task.task_id, 'pr': task.pr.model_dump(),
                       'status': 'preflight', 'scoring_status': 'paused', 'quality_metrics': None,
                       'golden_sha256': task.golden_sha256,
@@ -160,7 +203,7 @@ def run_development_subset(benchmark, reviewer, client, results_dir, *, pricing=
             record['reused'] = bool(prior and prior.run and prior.run.result.status == 'success')
             # Build but never send here. All size/configuration failures precede calls.
             payload = reviewer.payload(inp.diff, review_prompt())
-            record['conservative_input_estimate'] = len(json.dumps(payload, ensure_ascii=False).encode()) + 4096
+            record['request_byte_measurements'] = {'baseline': measure_request(payload, reviewer.config.request_byte_budget)}
             record['diff_base'] = inp.diff_base
             record['status'] = 'ready'
             write_json(root / 'inputs' / (task.task_id + '.json'), inp.model_dump())
@@ -175,7 +218,8 @@ def run_development_subset(benchmark, reviewer, client, results_dir, *, pricing=
                 snapshot = client.frozen_head(task.pr, source_repository=task.source_repository,
                                               cache_dir=Path(cache_dir) / 'github')
                 context = prepare_context(inp, reviewer, snapshot, retrieval_config,
-                                          cache_dir=Path(cache_dir) / 'retrieval')
+                                          cache_dir=Path(cache_dir) / 'retrieval',
+                                          reserve_static_signal_byte_cap=static_config.signal_byte_budget)
                 retrieval_elapsed = time.perf_counter() - retrieval_started
             if 'tools' in execution_modes or 'full' in execution_modes:
                 static_started = time.perf_counter()
@@ -197,11 +241,11 @@ def run_development_subset(benchmark, reviewer, client, results_dir, *, pricing=
                 mode_record = dict(record, mode=mode)
                 if mode == 'retrieval':
                     payload = reviewer.payload(inp.diff, review_prompt(), context=context.payload())
-                    mode_record['conservative_input_estimate'] = len(json.dumps(payload, ensure_ascii=False).encode()) + 4096
+                    mode_record['request_byte_measurements'] = {mode: measure_request(payload, reviewer.config.request_byte_budget)}
                 elif mode in ('tools', 'full'):
                     payload = reviewer.payload(inp.diff, review_prompt(), context=context.payload(),
-                                              static_signals=static_result.payload(static_config.signal_token_budget))
-                    mode_record['conservative_input_estimate'] = len(json.dumps(payload, ensure_ascii=False).encode()) + 4096
+                                              static_signals=static_result.payload(static_config.signal_byte_budget))
+                    mode_record['request_byte_measurements'] = {mode: measure_request(payload, reviewer.config.request_byte_budget)}
                 if mode in modes:
                     report['tasks'].append(mode_record)
                 mode_root = root if modes == ['baseline'] else root / 'modes' / mode
@@ -245,7 +289,7 @@ def run_development_subset(benchmark, reviewer, client, results_dir, *, pricing=
                                static_analysis_latency_seconds=static_elapsed,
                                retrieval_latency_seconds=retrieval_elapsed,
                                acquisition_latency_seconds=elapsed,
-                               signal_budget=static_config.signal_token_budget,
+                               signal_budget=static_config.signal_byte_budget,
                                input_artifact_directory=str((root / 'inputs').resolve()),
                                tools_run=tools_runs[task.task_id])
             requested = record['mode'] in modes
@@ -292,5 +336,17 @@ def run_development_subset(benchmark, reviewer, client, results_dir, *, pricing=
              else len(r.get('attempts', [])) + len(r.get('verifier_attempts', [])))
             + sum(len(p['attempts']) for p in r.get('previous_results', []))
             for r in report['tasks'])
+        report['requested_reviews'] = len(evaluable_tasks) * len(modes)
+        report['task_count'] = len(benchmark.subset.tasks)
+        by_task = {}
+        for row in report['tasks']:
+            by_task.setdefault(row['task_id'], []).append(row)
+        report['completed_task_count'] = sum(
+            len(rows) == len(modes) and all(row.get('status') == 'success' for row in rows)
+            for rows in by_task.values())
+        report['failed_task_count'] = sum(any(row.get('status') == 'failed' for row in rows)
+                                          for rows in by_task.values())
+        report['not_attempted_task_count'] = max(
+            0, len(evaluable_tasks) - report['completed_task_count'] - report['failed_task_count'])
         write_json(root / 'summary.json', report)
     return root / 'summary.json', report

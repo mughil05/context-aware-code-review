@@ -81,7 +81,7 @@ class ResumeTests(TestCase):
         source = self.interrupted()
         for attr, value, allow in [('max_output_tokens', 8192, False),
                                     ('max_output_tokens', 2048, True),
-                                    ('input_token_limit', 64000, True),
+                                    ('request_byte_budget', 64000, True),
                                     ('timeout_seconds', 120.0, True)]:
             with self.subTest(attr=attr, value=value):
                 provider = self.provider()
