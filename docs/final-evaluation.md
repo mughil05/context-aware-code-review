@@ -91,3 +91,80 @@ excludes the declared Nipoppy task from judge input; its aggregation adapter che
 the same recorded exclusion and excludes it from all denominators. ReviewBench's
 pinned matcher/judge remains responsible for semantic matching and unmatched
 classification. No model, judge, or quality metrics are run by preflight.
+
+
+## Primary scope-adapted metrics
+
+Judge against filtered goldens, preserving original TP/FP labels. Unmatched
+candidates are classified by ReviewBench; out-of-contract category/scope results
+are excluded and counted separately. No custom matcher is used.
+
+Let M be matched candidate TPs, F all eligible candidate FPs, N eligible novel TPs,
+G eligible golden TPs, and C distinct eligible golden TPs covered according to
+ReviewBench detailed output. Primary augmented precision is (M+N)/(M+N+F);
+primary augmented recall is (C+N)/(G+N). Primary F1 is their harmonic mean.
+Fixed-golden recall C/G and grounded precision remain separately named diagnostics.
+Novel TPs expand both the augmented recall numerator and denominator. These are
+scope-filtered/adapted metrics, not unfiltered native ReviewBench scores.
+
+`micro` pools counts before calculating metrics. `macro` averages each defined
+per-PR metric; macro F1 averages per-PR F1, not the harmonic mean of macro P/R.
+`macro_defined_pr_counts` exposes each denominator. Zero denominators produce null;
+F1 is null if either P/R is undefined, and zero if both are defined and sum to zero.
+Top-level precision/recall/F1 are aliases of the primary pooled metrics.
+
+FP/PR divides eligible FPs by completed PRs including empty reviews. The separate
+FP-per-evaluable-PR value is null until every evaluable PR completes, avoiding an
+assumption of zero FPs in failed/unattempted tasks. Nipoppy is outside both PR
+denominators. Per-mode aggregation uses identical formulas. Generation artifacts
+are read-only; metric changes do not regenerate any reviewer/verifier output.
+
+Judging prerequisites: the pinned upstream model registry must support the chosen
+provider/model and have credentials configured. A successful Python reviewer call
+does not prove compatibility with ReviewBench's separate TypeScript SDK. Do not
+start paid judging until registry compatibility is established offline.
+
+
+## Predeclared primary judge: OpenAI gpt-5.4
+
+Before any quality scores were observed, the judge was fixed to `openai/gpt-5.4`
+for baseline/retrieval/tools/full, concurrency 1. `gpt-6-luna` was initially
+preferred but rejected before scoring because it is absent from the pinned SDK
+registry. Generation remains OpenAI gpt-6-luna and is unchanged.
+
+`configs/reviewbench-scoring.json` freezes judge choice, registry metadata, upstream
+revision/lockfile/patched-source hashes, exact candidate/golden hashes, rendered
+prompt identities, and per-mode checkpoint fingerprints calculated using the
+pinned upstream fingerprint function. No matcher/classifier semantics changed.
+Pinned registry gpt-5.4 contextWindow=272000 and maxTokens=128000; the judge uses
+low thinking for matching and medium for classification. These judge settings do
+not inherit the product review's 8192 output-token budget. OPENAI_API_KEY is required.
+
+Use `scripts/reviewbench_scoring_check.py inputs` before judging. Run one mode at a
+time, in baseline/retrieval/tools/full order. Use upstream strict mode (default),
+never --ingest or --no-strict, filtered goldens and the pinned upstream manifest.
+Save stdout/stderr to `scoring/<mode>.log`; append `JUDGE_EXIT=0` only when the
+judge process exits zero. Then `... complete --mode <mode>` checks 19 unique PRs,
+exact candidate/detail identities and labels/scopes, frozen judge/input hashes,
+no checkpoint, and a successful error-free log before advancing.
+
+On interruption, stop and preserve logs/checkpoint/outputs. `... checkpoint --mode
+<mode>` verifies the exact frozen fingerprint and completed PR records without
+judging. A compatible incomplete checkpoint permits retrying only that mode with
+the identical output path and settings. Archive the old log before retrying.
+An absent, malformed or incompatible checkpoint must be investigated: upstream
+can ignore it and restart paid work. An all-19 checkpoint needs finalization
+inspection, not blind retry. Completed modes must never be rerun. In-flight PR
+work may repeat; upstream checkpoints after each entire PR and writes non-atomically.
+
+Pinned strict mode refuses to write a partial aggregate when PR errors occur.
+SDK retries (matcher 2, classifier 3), classifier format repair and tool turns can
+add paid requests. Success requires 19 completed PRs and zero errors, not merely
+an output file. The upstream classifier may fetch/check out repositories in the
+separate judge repo directory; no project Git operation is needed for preparation.
+
+After all four completion checks pass, use `scripts/reviewbench_scope.py aggregate`
+with the ORIGINAL reference directory (to retain excluded counts), detailed judged
+outputs from FILTERED goldens, and one separate `.scoped.json` per mode. Finally
+`scripts/reviewbench_scoring_check.py compare` validates their provenance and prints
+a deterministic tab-separated comparison without judging, rematching or scoring.

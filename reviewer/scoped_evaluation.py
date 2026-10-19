@@ -16,6 +16,17 @@ def scoped_golden(golden):
     return {**golden, 'findings': [dict(f) for f in golden['findings'] if eligible_finding(f)]}
 
 
+def _metrics(tp, fp, covered_tp, eligible_tp, novel_tp):
+    """Pinned ReviewBench augmented formulas, applied after scope filtering."""
+    precision = tp / (tp + fp) if tp + fp else None
+    recall = ((covered_tp + novel_tp) / (eligible_tp + novel_tp)
+              if eligible_tp + novel_tp else None)
+    f1 = (None if precision is None or recall is None else
+          2 * precision * recall / (precision + recall) if precision + recall else 0.0)
+    return {'augmented_precision': precision, 'augmented_recall': recall, 'f1': f1,
+            'fixed_golden_recall': covered_tp / eligible_tp if eligible_tp else None}
+
+
 def _task_score(task_id, golden, details):
     selected = scoped_golden(golden)['findings']
     if (golden.get('pr_key') != task_id or details.get('pr_key') != task_id
@@ -71,12 +82,13 @@ def _task_score(task_id, golden, details):
             'covered_eligible_golden_tp': covered_tp,
             'novel_tp': novel_tp, 'novel_fp': novel_fp,
             'excluded_candidates': excluded_candidates,
-            'candidate_denominator': tp + fp}
+            'candidate_denominator': tp + fp,
+            **_metrics(tp, fp, covered_tp, len(positives), novel_tp)}
 
 
 def aggregate_scoped(results, *, completed_task_ids, failed_task_ids=(), not_attempted_task_ids=(),
                      excluded_pre_execution_task_ids=()):
-    """Adapt ReviewBench details to fixed-golden recall and in-scope FP rates."""
+    """Adapt ReviewBench augmented metrics and in-scope FP rates."""
     completed = set(completed_task_ids)
     failed = set(failed_task_ids)
     not_attempted = set(not_attempted_task_ids)
@@ -95,21 +107,26 @@ def aggregate_scoped(results, *, completed_task_ids, failed_task_ids=(), not_att
     matched_fp = sum(row['matched_fp'] for row in per_task)
     eligible_tp = sum(row['eligible_golden_tp'] for row in per_task)
     covered_tp = sum(row['covered_eligible_golden_tp'] for row in per_task)
-    precision = tp / (tp + fp) if tp + fp else None
+    novel_tp = sum(row['novel_tp'] for row in per_task)
+    micro = _metrics(tp, fp, covered_tp, eligible_tp, novel_tp)
+    macro, defined_counts = {}, {}
+    for key in micro:
+        defined = [row[key] for row in per_task if row[key] is not None]
+        macro[key] = sum(defined) / len(defined) if defined else None
+        defined_counts[key] = len(defined)
     grounded_precision = (matched_tp / (matched_tp + matched_fp)
                           if matched_tp + matched_fp else None)
-    recall = covered_tp / eligible_tp if eligible_tp else None
-    if precision is None or recall is None:
-        f1 = None
-    elif precision + recall == 0:
-        f1 = 0.0
-    else:
-        f1 = 2 * precision * recall / (precision + recall)
+    evaluable_count = len(completed | failed | not_attempted)
     return {
         'metric_family': 'scope-filtered/adapted ReviewBench; not native ReviewBench metrics',
-        'precision': precision, 'recall': recall, 'f1': f1,
+        'precision': micro['augmented_precision'], 'recall': micro['augmented_recall'],
+        **micro, 'micro': micro, 'macro': macro,
+        'macro_defined_pr_counts': defined_counts,
+        'macro_denominator_definition': 'each metric averages only completed PRs where that metric is defined; macro F1 averages per-PR F1',
         'grounded_precision': grounded_precision,
         'false_positives_per_pr': fp / len(per_task) if per_task else None,
+        'false_positives_per_evaluable_pr': (fp / evaluable_count
+            if evaluable_count and not failed and not not_attempted else None),
         'tp': tp, 'fp': fp, 'fn': eligible_tp - covered_tp,
         'eligible_golden_tp': eligible_tp,
         'eligible_golden_fp': sum(row['eligible_golden_fp'] for row in per_task),
@@ -128,7 +145,9 @@ def aggregate_scoped(results, *, completed_task_ids, failed_task_ids=(), not_att
         'excluded_pre_execution_task_ids': sorted(excluded),
         'precision_denominator': 'in-scope matched TP/FP plus in-scope ReviewBench-classified unmatched TP/FP',
         'grounded_precision_denominator_definition': 'in-scope candidates matched by ReviewBench to eligible golden findings; unmatched candidates excluded',
-        'recall_denominator': 'all in-scope tp golden findings in completed PRs; unmatched novel TPs do not expand it',
+        'recall_denominator': 'eligible golden TPs plus in-scope ReviewBench-classified novel TPs in completed PRs',
+        'fixed_golden_recall_denominator': 'eligible golden TPs only; diagnostic, not primary recall',
+        'false_positives_per_evaluable_pr_denominator': 'all evaluable PRs; null until all complete; pre-execution exclusions omitted',
         'false_positives_per_pr_denominator': 'completed PRs, including zero-positive PRs; failed PRs excluded',
         'per_task': per_task,
     }

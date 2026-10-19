@@ -253,8 +253,16 @@ class FinalEvaluationTests(unittest.TestCase):
             run_summary_path.write_text(json.dumps({'subset_sha256': 'c'*64, 'tasks': [
                 {'task_id': task_id, 'mode': 'baseline', 'status': 'success'},
                 {'task_id': clean_id, 'mode': 'baseline', 'status': 'success'}]}))
-            score = aggregate(detail_path, judge_summary_path, golden_dir, manifest_path,
-                              run_summary_path, 'baseline')
+            for mode in ('baseline', 'retrieval', 'tools', 'full'):
+                with self.subTest(mode=mode):
+                    run = json.loads(run_summary_path.read_text())
+                    for row in run['tasks']:
+                        row['mode'] = mode
+                    run_summary_path.write_text(json.dumps(run))
+                    score = aggregate(detail_path, judge_summary_path, golden_dir, manifest_path,
+                                      run_summary_path, mode)
+                    self.assertEqual(score['augmented_recall'], 1)
+                    self.assertEqual(score['macro']['f1'], 1)
             self.assertEqual(score['tp'], 1)
             self.assertEqual(score['fn'], 0)
             self.assertEqual(score['excluded_golden_count'], 1)

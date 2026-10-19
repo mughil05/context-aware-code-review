@@ -531,9 +531,9 @@ performance findings labeled introduced-by-pr or exacerbated-by-pr, preserving
 their original TP/FP labels. ReviewBench still performs semantic matching and
 unmatched-candidate classification. Because its pinned details omit scope, a
 hash-checked serialization-only patch records the existing scope judgments. The
-adapter reports both adapted augmented precision and grounded precision, fixed
-eligible-golden recall, their denominators, F1, and false positives per completed
-PR. See [the final evaluation runbook](docs/final-evaluation.md) for commands and
+adapter reports adapted augmented precision and augmented recall, primary F1
+from those two values, pooled/micro and macro averages, and false positives per
+completed PR. Grounded precision and fixed-golden recall are separate diagnostics. See [the final evaluation runbook](docs/final-evaluation.md) for commands and
 limitations.
 
 Keep the final20 selection rule frozen before model execution, share reviewer
