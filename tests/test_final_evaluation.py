@@ -67,11 +67,15 @@ class FinalEvaluationTests(unittest.TestCase):
         final_ids = [task['task_id'] for task in data['tasks']]
         self.assertEqual(len(set(final_ids)), 20)
         self.assertTrue(dev_ids.isdisjoint(final_ids))
-        benchmark = load_benchmark(ARCHIVE, ROOT / 'configs/reviewbench-final20.json', allow_unpinned_diffs=True)
-        self.assertEqual(len(benchmark.golden), 20)
-        self.assertTrue(all(task.diff_sha256 is None for task in benchmark.subset.tasks))
-        with self.assertRaisesRegex(ValueError, 'not frozen by preflight'):
-            load_benchmark(ARCHIVE, ROOT / 'configs/reviewbench-final20.json')
+        # Test the unlocked manifest independently of the now-committed final lock.
+        with TemporaryDirectory() as temp:
+            unlocked = Path(temp) / 'final20.json'
+            unlocked.write_bytes(raw)
+            benchmark = load_benchmark(ARCHIVE, unlocked, allow_unpinned_diffs=True)
+            self.assertEqual(len(benchmark.golden), 20)
+            self.assertTrue(all(task.diff_sha256 is None for task in benchmark.subset.tasks))
+            with self.assertRaisesRegex(ValueError, 'not frozen by preflight'):
+                load_benchmark(ARCHIVE, unlocked)
 
     def test_final_manifest_lock_is_required_and_bound_to_task_shas(self):
         with TemporaryDirectory() as temp:
@@ -550,8 +554,9 @@ class FinalEvaluationTests(unittest.TestCase):
             raw_subset['tasks'] = [next(task for task in raw_subset['tasks']
                                          if task['task_id'] == 'JacobPEvans_ansible-splunk_120-252ddc57')]
             subset_path.write_text(json.dumps(raw_subset, sort_keys=True))
-            benchmark = load_benchmark(ARCHIVE, ROOT / 'configs/reviewbench-final20.json',
-                                       allow_unpinned_diffs=True)
+            unlocked = root / 'unlocked-final20.json'
+            unlocked.write_bytes((ROOT / 'configs/reviewbench-final20.json').read_bytes())
+            benchmark = load_benchmark(ARCHIVE, unlocked, allow_unpinned_diffs=True)
             task = benchmark.subset.tasks[0]
             subset = benchmark.subset.model_copy(update={'tasks': [task]})
             benchmark = replace(benchmark, subset=subset,

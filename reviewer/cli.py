@@ -86,6 +86,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     evaluate.add_argument("--max-output-tokens", type=int, help="Output ceiling, including reasoning; default from config")
     evaluate.add_argument("--context-byte-budget", "--context-token-budget", dest="context_byte_budget", type=int,
                           help="Serialized UTF-8 context byte cap (legacy alias: --context-token-budget)")
+    evaluate.add_argument("--continue-run", help="Continue the frozen final A/B/C/D successful prefix in a new directory")
     evaluate.add_argument("--resume-from", help="Validate and reuse a prior run in a new output directory")
     evaluate.add_argument("--retry-failed", action="store_true", help="Explicitly authorize one new attempt on failed tasks")
     evaluate.add_argument("--allow-output-budget-change", action="store_true",
@@ -204,6 +205,12 @@ def _benchmark_main(args, parser):
         parser.error('invalid or duplicate evaluation mode')
     failure_code = 'invalid_config_file'
     try:
+        if getattr(args, 'continue_run', None):
+            if (args.resume_from or args.retry_failed or args.allow_output_budget_change or args.pricing
+                    or args.modes != ['baseline', 'retrieval', 'tools', 'full']
+                    or args.request_byte_budget != 73728 or args.context_byte_budget != 6000
+                    or args.max_output_tokens != 8192):
+                raise ValueError('continuation requires explicit frozen flags and no resume/pricing overrides')
         config = load_config(args.config)
         failure_code = 'benchmark_pin_mismatch'
         if config.benchmark.revision != REVISION or config.benchmark.manifest_sha256 != MANIFEST_SHA256:
@@ -239,14 +246,21 @@ def _benchmark_main(args, parser):
                 raise ModelError('unsupported_configuration', 'set VERIFY_PROVIDER=openai and VERIFY_MODEL for full mode')
             verifier = OpenAIReviewer(models.verify.model, config.review)
         failure_code = 'benchmark_run_failed'
-        path, report = run_development_subset(benchmark, reviewer, GitHubClient(),
-                                              args.results_dir or config.results_dir, pricing=pricing,
-                                              resume_from=args.resume_from, retry_failed=args.retry_failed,
-                                              allow_output_budget_change=args.allow_output_budget_change,
-                                              modes=args.modes, retrieval_config=config.retrieval,
-                                              static_config=config.static_analysis,
-                                              cache_dir=config.cache_dir, verifier=verifier,
-                                              verify_model=models.verify.model if models.verify else None)
+        if getattr(args, 'continue_run', None):
+            from reviewer.continuation import continue_frozen_run
+            path, report = continue_frozen_run(args.continue_run, benchmark, reviewer, verifier,
+                GitHubClient(), args.results_dir or config.results_dir, modes=args.modes,
+                retrieval_config=config.retrieval, static_config=config.static_analysis,
+                cache_dir=config.cache_dir)
+        else:
+            path, report = run_development_subset(benchmark, reviewer, GitHubClient(),
+                                                  args.results_dir or config.results_dir, pricing=pricing,
+                                                  resume_from=args.resume_from, retry_failed=args.retry_failed,
+                                                  allow_output_budget_change=args.allow_output_budget_change,
+                                                  modes=args.modes, retrieval_config=config.retrieval,
+                                                  static_config=config.static_analysis,
+                                                  cache_dir=config.cache_dir, verifier=verifier,
+                                                  verify_model=models.verify.model if models.verify else None)
     except (ValueError, OSError, KeyError, TypeError) as error:
         # Emit only fixed codes, never exception bodies, paths, or Pydantic values.
         if failure_code == 'invalid_benchmark_data':
@@ -270,7 +284,7 @@ def _benchmark_main(args, parser):
             failure_code = 'incompatible_resume: check saved identities/settings and explicit resume flags'
         print(f'Benchmark configuration failed: {failure_code}. No successful benchmark reported.', file=sys.stderr)
         return 2
-    requested_total = len(benchmark.subset.tasks) * len(args.modes)
+    requested_total = report.get('requested_reviews', len(benchmark.subset.tasks) * len(args.modes))
     print(f"ReviewBench: {report['status']}; {report['completed_reviews']}/{requested_total} requested reviews completed")
     print(f"Reused: {report.get('reused_reviews', 0)}; new model attempts: {report['model_attempts']}")
     print('Scoring paused: no matching or precision/recall/F1 computed.')

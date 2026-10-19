@@ -668,3 +668,37 @@ static evidence, and verification are present; reproducible benchmark results an
 precision/recall/F1/FP metrics exist; latency/cost are tracked; tests pass; and another
 developer can reproduce the documented experiment. Do not add product features
 after these criteria are satisfied. Resume metrics must come from those runs.
+
+### Continuing the frozen final evaluation
+
+`evaluate --continue-run <failed-run-directory>` is limited to the audited final
+A/B/C/D run `reviewbench-18579bfaf3d04e02bd9d38faebdbd077` and its validated
+continuation descendants. It requires the unchanged final20 manifest and lock,
+models, prompts, schema, settings, evidence configuration, and original mode order.
+The initial source summary is bound by SHA-256; arbitrary successful observations
+cannot be selected for reuse.
+
+Use the same final evaluation command and add `--continue-run` with the failed
+run directory. Explicitly retain `--request-byte-budget 73728`,
+`--context-byte-budget 6000`, and `--max-output-tokens 8192`. Do not combine this
+with development `--resume-from`, retry/output-change flags, or pricing overrides.
+Invoking continuation explicitly authorizes one new attempt at its first unfinished
+observation. There are no automatic retries and the 60-second timeout is unchanged.
+
+A new `results/reviewbench-<uuid>/` directory receives byte-identical copies of the
+successful prefix and its candidate exports. Source directories remain read-only.
+Failed artifacts are preserved under `history/`; `summary.json` records source and
+artifact hashes, reused/new observation counts, reviewer/verifier attempts, recorded
+usage, and unknown-billing timeouts. The summary is replaced atomically after each
+observation. Intended/evaluable/excluded counts remain 20/19/1, with 76 requested
+mode observations. Scoring remains external and paused.
+
+The first continuation request is NightHawk #96 retrieval. Its rebuilt request hash
+and byte measurement must match the original timeout artifact before sending.
+C proposals are reused by D. If a later D attempt fails partway, already completed
+verifier decisions can be replayed locally only against identical request hashes;
+their original usage and latency remain recorded, without another paid call.
+A further failure stops execution; explicitly continue from that new failed run
+with the same command flags. Keep all ancestor directories available for validation.
+Unreferenced artifacts or ambiguous/incomplete persistence fail closed instead of
+risking duplicate spending. A hard process kill is not automatically recoverable.
